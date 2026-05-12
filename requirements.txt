@@ -1,0 +1,16 @@
+fastapi
+uvicorn
+gradio
+httpx
+pydantic
+pydantic-settings
+python-dotenv
+langchain
+langgraph
+groq
+tenacity
+orjson
+openai-whisper
+cartesia
+pytest
+pytest-asyncio
