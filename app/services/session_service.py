@@ -52,7 +52,11 @@ class SessionService:
         session.customer_last_message = customer_message
         self.transcripts.add_entry(session, "customer", customer_message)
 
-        if session.turn_count >= self.settings.max_turns_before_escalation:
+        if self._needs_immediate_escalation(customer_message):
+            session.conversation_state = ConversationState.ESCALATING
+            session.escalation_reason = "customer_requested_human"
+            session.agent_last_message = "I understand. I'll arrange a human follow-up from here."
+        elif session.turn_count >= self.settings.max_turns_before_escalation:
             session.conversation_state = ConversationState.ESCALATING
             session.escalation_reason = "max_turns_before_escalation"
             session.agent_last_message = "I'll connect this to a human follow-up because we haven't resolved it yet."
@@ -80,13 +84,16 @@ class SessionService:
                     }
                 )
                 session.conversation_state = ConversationState(graph_state["conversation_state"])
-            session.agent_last_message = await self.responses.generate(
-                state=response_state,
-                intent=session.parsed_intent,
-                transcript=session.transcript,
-                customer_message=customer_message,
-                escalation_reason=session.escalation_reason,
-            )
+            if session.conversation_state in {ConversationState.CLOSING, ConversationState.ESCALATING, ConversationState.VOICEMAIL}:
+                session.agent_last_message = graph_state.get("latest_agent_message", "")
+            else:
+                session.agent_last_message = await self.responses.generate(
+                    state=response_state,
+                    intent=session.parsed_intent,
+                    transcript=session.transcript,
+                    customer_message=customer_message,
+                    escalation_reason=session.escalation_reason,
+                )
 
         self.transcripts.add_entry(session, "agent", session.agent_last_message)
         await self.voice.play_response(session, session.agent_last_message)
@@ -119,3 +126,15 @@ class SessionService:
             return "The outbound attempt did not reach a live conversation. A voicemail or no-answer path was recorded and follow-up is required."
         reason = session.escalation_reason or "the issue needs human review"
         return f"The call did not fully resolve. The conversation was escalated because {reason}. A human follow-up is required."
+
+    def _needs_immediate_escalation(self, customer_message: str) -> bool:
+        lowered = customer_message.lower()
+        trigger_phrases = [
+            "human",
+            "person",
+            "agent",
+            "representative",
+            "someone call me",
+            "speak to someone",
+        ]
+        return any(phrase in lowered for phrase in trigger_phrases)
