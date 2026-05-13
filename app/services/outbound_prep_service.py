@@ -16,8 +16,8 @@ class PreparedCall(BaseModel):
     customer_record: CustomerRecord
     personalized_message: str
     session: SessionState | None = None
-    telnyx_attempted: bool = False
-    telnyx_error: str | None = None
+    telephony_attempted: bool = False
+    telephony_error: str | None = None
 
 
 class OutboundPrepService:
@@ -62,11 +62,11 @@ class OutboundPrepService:
 
         try:
             session = await self.session_service.start_session(session)
-            prepared.telnyx_attempted = True
+            prepared.telephony_attempted = True
             prepared.session = session
         except Exception as exc:
-            prepared.telnyx_attempted = True
-            prepared.telnyx_error = str(exc)
+            prepared.telephony_attempted = True
+            prepared.telephony_error = str(exc)
             prepared.session = session
         return prepared
 

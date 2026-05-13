@@ -62,7 +62,7 @@ async def test_customer_human_request_escalates_and_persists_log(tmp_path: Path)
 
 
 @pytest.mark.asyncio
-async def test_telnyx_ai_gather_webhook_resolves_without_live_call(tmp_path: Path):
+async def test_twilio_gather_resolves_without_live_call(tmp_path: Path):
     service = SessionService(GradioTransport(), SessionRegistry())
     service.persistence.log_dir = tmp_path
 
@@ -70,35 +70,27 @@ async def test_telnyx_ai_gather_webhook_resolves_without_live_call(tmp_path: Pat
         "John Smith hasn't paid his invoice of $450 from 15 April. Follow up and get a payment commitment.",
         "+61400000000",
     )
+    session = await service.start_session(session)
     session.call_control_id = "call-control-123"
-    session.call_session_id = "call-session-123"
+    session.twilio_gather_action_url_absolute = "https://example.com/webhooks/twilio/action"
+    session.twilio_voice_url_absolute = "https://example.com/webhooks/twilio/voice"
+    session.twilio_status_callback_url_absolute = "https://example.com/webhooks/twilio/status"
+    session.voice_gather_started = True
     service.registry.save(session)
 
-    event = {
-        "data": {
-            "event_type": "call.ai_gather.ended",
-            "payload": {
-                "call_control_id": "call-control-123",
-                "call_session_id": "call-session-123",
-                "result": {
-                    "resolution_status": "payment_committed",
-                    "payment_date": "tomorrow",
-                    "notes": "Customer committed to pay tomorrow.",
-                },
-                "message_history": [
-                    {"role": "assistant", "content": "Can you confirm when payment will be made?"},
-                    {"role": "user", "content": "Yes, I can pay tomorrow."},
-                ],
-            },
-        }
-    }
-
-    updated = await service.handle_telnyx_webhook(event)
+    await service.handle_twilio_gather(
+        {"CallSid": "call-control-123", "SpeechResult": "Okay, what's this about?"}
+    )
+    _, twiml = await service.handle_twilio_gather(
+        {"CallSid": "call-control-123", "SpeechResult": "Yes, I can pay tomorrow."}
+    )
+    updated = service.registry.get(session.session_id)
     assert updated is not None
     assert updated.outcome is not None
     assert updated.outcome.value == "resolved"
     assert updated.conversation_state.value == "closing"
     assert any("pay tomorrow" in entry.content.lower() for entry in updated.transcript)
+    assert "<?xml" in twiml.lower() or "<response" in twiml.lower()
 
 
 @pytest.mark.asyncio

@@ -26,6 +26,6 @@ python -m app.main
 
 ## Notes
 
-- `TelnyxTransport` supports real outbound Call Control and webhook-driven `gather_using_ai` for first-pass live telephony.
+- `TwilioTransport` uses Programmable Voice (`<Say>` + `<Gather input="speech">`) and status webhooks for live calls.
 - Gradio is a debug transport, not the core runtime abstraction.
 - The conversation engine uses LangGraph with separate call and conversation state.

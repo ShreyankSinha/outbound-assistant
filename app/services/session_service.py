@@ -1,19 +1,32 @@
 from __future__ import annotations
 
-from app.core.enums import CallState
 from app.config import get_settings
-from app.core.enums import ConversationState, SessionOutcome
+from app.core.enums import CallState, ConversationState, SessionOutcome
+from app.core.exceptions import ProviderError
 from app.core.utils import new_session_id, utc_now_iso
 from app.graph.builder import build_conversation_graph
 from app.llm.instruction_parser import OperatorInstructionParser
 from app.llm.response_generator import ResponseGenerator
 from app.logging.session_persistence import SessionPersistence
+from app.orchestration.call_lifecycle_manager import CallLifecycleManager
 from app.schemas.session_state import SessionState
 from app.services.session_registry import SessionRegistry
 from app.services.transcript_service import TranscriptService
 from app.transport.base_transport import BaseTransport
-from app.transport.telnyx_api import TelnyxCallControlClient
-from app.transport.telnyx_transport import TelnyxTransport
+from app.transport.twilio.twiml_builder import (
+    build_amd_wait_twiml,
+    build_closing_twiml,
+    build_continue_gather_twiml,
+    build_opening_gather_twiml,
+    build_voicemail_twiml,
+)
+from app.transport.twilio.urls import twilio_webhook_urls_from_status_callback
+from app.transport.twilio.webhook_handler import (
+    is_human_amd,
+    is_voicemail_amd,
+    map_twilio_call_status_to_call_state,
+)
+from app.transport.twilio_transport import TwilioTransport
 from app.voice.session_controller import VoiceSessionController
 
 
@@ -26,6 +39,15 @@ class SessionService:
         self.transcripts = TranscriptService()
         self.voice = VoiceSessionController(transport)
         self.registry = registry or SessionRegistry()
+        self.call_lifecycle = CallLifecycleManager()
+
+    def _configure_twilio_webhook_urls(self, session: SessionState) -> None:
+        if not self.settings.twilio_status_callback_url:
+            raise ValueError("TWILIO_STATUS_CALLBACK_URL is required for Twilio transport.")
+        voice, status, action = twilio_webhook_urls_from_status_callback(self.settings.twilio_status_callback_url)
+        session.twilio_voice_url_absolute = voice
+        session.twilio_status_callback_url_absolute = status
+        session.twilio_gather_action_url_absolute = action
 
     async def create_session(self, operator_instruction: str, call_target: str = "mock-customer") -> SessionState:
         parsed_intent = await self.parser.parse(operator_instruction)
@@ -46,6 +68,11 @@ class SessionService:
                 transcript=session.transcript,
             )
         self.transcripts.add_entry(session, "agent", session.agent_last_message)
+        if isinstance(self.voice.transport, TwilioTransport):
+            try:
+                self._configure_twilio_webhook_urls(session)
+            except ValueError as exc:
+                raise ProviderError(str(exc)) from exc
         session = await self.voice.start_outbound_call(session)
         if self.voice.transport.manages_live_call_lifecycle:
             session.conversation_state = ConversationState.UNDERSTANDING
@@ -57,7 +84,7 @@ class SessionService:
         await self.voice.play_response(session, session.agent_last_message)
         return self.registry.save(session)
 
-    async def handle_customer_turn(self, session: SessionState, customer_message: str) -> SessionState:
+    async def apply_customer_speech(self, session: SessionState, customer_message: str) -> SessionState:
         session.turn_count += 1
         session.customer_last_message = customer_message
         self.transcripts.add_entry(session, "customer", customer_message)
@@ -106,12 +133,18 @@ class SessionService:
                 )
 
         self.transcripts.add_entry(session, "agent", session.agent_last_message)
+        return session
+
+    async def handle_customer_turn(self, session: SessionState, customer_message: str) -> SessionState:
+        session = await self.apply_customer_speech(session, customer_message)
         await self.voice.play_response(session, session.agent_last_message)
         if session.conversation_state in {ConversationState.CLOSING, ConversationState.ESCALATING, ConversationState.VOICEMAIL}:
             await self.finalize_session(session)
         return self.registry.save(session)
 
     async def finalize_session(self, session: SessionState, end_call: bool = True) -> SessionState:
+        if session.timestamp_end:
+            return self.registry.save(session)
         if session.outcome is None:
             if session.conversation_state == ConversationState.CLOSING:
                 session.outcome = SessionOutcome.RESOLVED
@@ -130,53 +163,151 @@ class SessionService:
         self.persistence.persist(session)
         return self.registry.save(session)
 
-    async def handle_telnyx_webhook(self, event: dict) -> SessionState | None:
-        payload = event.get("data", {}).get("payload", {})
-        event_type = event.get("data", {}).get("event_type", "")
-        session = self.registry.get_by_call_control_id(payload.get("call_control_id"))
-        session = session or self.registry.get_by_call_session_id(payload.get("call_session_id"))
-        session = session or self.registry.get(self._decode_session_id(payload.get("client_state")))
+    def _gather_action_url(self, session: SessionState) -> str:
+        base = session.twilio_gather_action_url_absolute
+        sep = "&" if "?" in base else "?"
+        return f"{base}{sep}session_id={session.session_id}"
+
+    def _voice_url(self, session: SessionState) -> str:
+        base = session.twilio_voice_url_absolute
+        sep = "&" if "?" in base else "?"
+        return f"{base}{sep}session_id={session.session_id}"
+
+    def build_twilio_voice_twiml(self, session: SessionState) -> str:
+        if session.conversation_state == ConversationState.VOICEMAIL or session.call_state == CallState.VOICEMAIL_DETECTED:
+            if not session.voicemail_message_played:
+                text = self._build_voicemail_message(session)
+                self.transcripts.add_entry(session, "agent", text)
+                session.voicemail_message_played = True
+                return build_voicemail_twiml(message=text)
+            return build_closing_twiml(message="Goodbye.")
+
+        if session.twilio_amd_answered_by is None:
+            if session.twilio_voice_redirects >= 30:
+                session.twilio_amd_answered_by = "human"
+                session.resolution_notes.append("amd_result:timeout_assumed_human")
+            else:
+                session.twilio_voice_redirects += 1
+                return build_amd_wait_twiml(next_url_absolute=self._voice_url(session))
+
+        answered = (session.twilio_amd_answered_by or "").lower()
+        if is_voicemail_amd(session.twilio_amd_answered_by):
+            self.call_lifecycle.transition(session, CallState.VOICEMAIL_DETECTED)
+            session.conversation_state = ConversationState.VOICEMAIL
+            if not session.voicemail_message_played:
+                text = self._build_voicemail_message(session)
+                self.transcripts.add_entry(session, "agent", text)
+                session.voicemail_message_played = True
+                return build_voicemail_twiml(message=text)
+            return build_closing_twiml(message="Goodbye.")
+
+        if is_human_amd(session.twilio_amd_answered_by) or answered == "unknown":
+            if not session.voice_gather_started:
+                session.voice_gather_started = True
+                return build_opening_gather_twiml(
+                    opening_text=session.agent_last_message,
+                    gather_action_url_absolute=self._gather_action_url(session),
+                )
+            return build_continue_gather_twiml(
+                agent_text=session.agent_last_message,
+                gather_action_url_absolute=self._gather_action_url(session),
+            )
+
+        return build_closing_twiml(message="Thank you, goodbye.")
+
+    async def handle_twilio_gather(self, form: dict[str, str]) -> tuple[SessionState | None, str]:
+        call_sid = form.get("CallSid") or ""
+        session = self.registry.get_by_call_control_id(call_sid) if call_sid else None
+        sid = form.get("session_id") or form.get("SessionId")
+        session = session or (self.registry.get(sid) if sid else None)
+        if not session:
+            return None, build_closing_twiml(message="Goodbye.")
+
+        speech = (form.get("SpeechResult") or form.get("StableSpeechResult") or "").strip()
+        if not speech:
+            twiml = build_continue_gather_twiml(
+                agent_text="Sorry, I did not catch that. Could you please repeat?",
+                gather_action_url_absolute=self._gather_action_url(session),
+            )
+            return self.registry.save(session), twiml
+
+        session = await self.apply_customer_speech(session, speech)
+        if session.conversation_state in {ConversationState.CLOSING, ConversationState.ESCALATING, ConversationState.VOICEMAIL}:
+            twiml = build_closing_twiml(message=session.agent_last_message)
+            await self.finalize_session(session, end_call=False)
+            return self.registry.save(session), twiml
+
+        twiml = build_continue_gather_twiml(
+            agent_text=session.agent_last_message,
+            gather_action_url_absolute=self._gather_action_url(session),
+        )
+        return self.registry.save(session), twiml
+
+    async def handle_twilio_status(self, form: dict[str, str]) -> SessionState | None:
+        call_sid = form.get("CallSid") or ""
+        call_status = (form.get("CallStatus") or "").strip()
+        answered_by = form.get("AnsweredBy")
+        session = self.registry.get_by_call_control_id(call_sid) if call_sid else None
         if not session:
             return None
 
-        session.call_control_id = payload.get("call_control_id") or session.call_control_id
-        session.call_session_id = payload.get("call_session_id") or session.call_session_id
-        session.call_leg_id = payload.get("call_leg_id") or session.call_leg_id
-        session.webhook_event_types.append(event_type)
-        self.registry.bind_telnyx_call(session, session.call_control_id, session.call_session_id)
+        session.call_control_id = call_sid or session.call_control_id
+        self.registry.bind_call_leg(session, session.call_control_id, session.call_session_id)
 
-        if event_type == "call.initiated":
-            session.call_state = CallState.RINGING
-        elif event_type == "call.answered":
-            session.call_state = CallState.ANSWERED
-        elif event_type == "call.machine.detection.ended":
-            result = payload.get("result", "")
-            session.resolution_notes.append(f"amd_result:{result}")
-            if result in {"human", "not_sure", "human_business", "human_residence"}:
-                session.call_state = CallState.ACTIVE
-                if isinstance(self.voice.transport, TelnyxTransport) and not session.telnyx_gather_started:
-                    session = await self.voice.transport.start_ai_gather(session, session.agent_last_message)
-            else:
-                session.call_state = CallState.VOICEMAIL_DETECTED
+        if answered_by:
+            session.twilio_amd_answered_by = answered_by
+            session.resolution_notes.append(f"amd_result:{answered_by}")
+            if is_voicemail_amd(answered_by):
+                self.call_lifecycle.transition(session, CallState.VOICEMAIL_DETECTED)
                 session.conversation_state = ConversationState.VOICEMAIL
-        elif event_type == "call.machine.greeting.ended":
-            if session.call_state == CallState.VOICEMAIL_DETECTED and isinstance(self.voice.transport, TelnyxTransport):
-                voicemail_text = self._build_voicemail_message(session)
-                self.transcripts.add_entry(session, "agent", voicemail_text)
-                session = await self.voice.transport.leave_voicemail(session, voicemail_text)
-        elif event_type == "call.ai_gather.ended":
-            self._append_telnyx_message_history(session, payload.get("message_history", []))
-            self._apply_telnyx_gather_result(session, payload.get("result", {}))
-            await self.finalize_session(session, end_call=True)
-        elif event_type == "call.hangup":
-            session.call_state = CallState.ENDED
-            if session.outcome is None:
-                if session.conversation_state == ConversationState.VOICEMAIL or CallState.VOICEMAIL_DETECTED == session.call_state:
-                    session.outcome = SessionOutcome.NO_ANSWER
-                elif session.conversation_state == ConversationState.ESCALATING:
-                    session.outcome = SessionOutcome.ESCALATED
-                else:
+            elif is_human_amd(answered_by):
+                if session.call_state == CallState.RINGING:
+                    self.call_lifecycle.transition(session, CallState.ANSWERED)
+                if session.call_state == CallState.ANSWERED:
+                    self.call_lifecycle.transition(session, CallState.ACTIVE)
+
+        event_key = f"status:{call_status}" + (f":amd:{answered_by}" if answered_by else "")
+        session.webhook_event_types.append(event_key)
+
+        if call_status:
+            mapped = map_twilio_call_status_to_call_state(call_status)
+            cs = call_status.lower()
+            if mapped == CallState.RINGING and session.call_state == CallState.INITIATING:
+                self.call_lifecycle.transition(session, CallState.RINGING)
+            elif mapped == CallState.RINGING and session.call_state not in {
+                CallState.RINGING,
+                CallState.VOICEMAIL_DETECTED,
+                CallState.ENDED,
+                CallState.FAILED,
+            }:
+                self.call_lifecycle.transition(session, CallState.RINGING)
+            elif mapped == CallState.ANSWERED:
+                if session.call_state == CallState.INITIATING:
+                    self.call_lifecycle.transition(session, CallState.RINGING)
+                if session.call_state == CallState.RINGING:
+                    self.call_lifecycle.transition(session, CallState.ANSWERED)
+            elif mapped == CallState.FAILED:
+                self.call_lifecycle.transition(session, CallState.FAILED)
+                if session.outcome is None:
                     session.outcome = SessionOutcome.FAILED
+                await self.finalize_session(session, end_call=False)
+            elif mapped == CallState.ENDED:
+                if session.outcome is None:
+                    if cs == "no-answer":
+                        session.outcome = SessionOutcome.NO_ANSWER
+                    elif cs == "busy":
+                        session.outcome = SessionOutcome.FAILED
+                    elif session.conversation_state == ConversationState.VOICEMAIL or session.call_state == CallState.VOICEMAIL_DETECTED:
+                        session.outcome = SessionOutcome.NO_ANSWER
+                    elif session.conversation_state == ConversationState.ESCALATING:
+                        session.outcome = SessionOutcome.ESCALATED
+                    elif session.conversation_state == ConversationState.CLOSING:
+                        session.outcome = SessionOutcome.RESOLVED
+                    elif cs == "failed":
+                        session.outcome = SessionOutcome.FAILED
+                    else:
+                        session.outcome = SessionOutcome.FAILED
+                self.call_lifecycle.transition(session, CallState.ENDED)
                 await self.finalize_session(session, end_call=False)
 
         return self.registry.save(session)
@@ -201,48 +332,6 @@ class SessionService:
             "speak to someone",
         ]
         return any(phrase in lowered for phrase in trigger_phrases)
-
-    def _decode_session_id(self, client_state: str | None) -> str:
-        return TelnyxCallControlClient.decode_client_state(client_state).get("session_id", "")
-
-    def _append_telnyx_message_history(self, session: SessionState, history: list[dict]) -> None:
-        for item in history:
-            role = item.get("role", "")
-            content = (item.get("content") or "").strip()
-            if not content:
-                continue
-            normalized_role = "customer" if role == "user" else "agent"
-            already_present = any(entry.role == normalized_role and entry.content == content for entry in session.transcript)
-            if not already_present:
-                self.transcripts.add_entry(session, normalized_role, content)
-
-    def _apply_telnyx_gather_result(self, session: SessionState, result: dict) -> None:
-        session.gather_result = result
-        status = result.get("resolution_status", "unresolved")
-        notes = result.get("notes", "")
-        if notes:
-            session.resolution_notes.append(notes)
-
-        if status == "payment_committed":
-            session.conversation_state = ConversationState.CLOSING
-            session.outcome = SessionOutcome.RESOLVED
-            if result.get("payment_date"):
-                session.follow_up_actions = [f"Expect payment on {result['payment_date']}."]
-        elif status == "callback_requested":
-            session.conversation_state = ConversationState.CLOSING
-            session.outcome = SessionOutcome.RESOLVED
-            callback_time = result.get("callback_time") or "the requested time"
-            session.follow_up_actions = [f"Place a callback at {callback_time}."]
-        elif status in {"human_requested", "disputed", "unresolved"}:
-            session.conversation_state = ConversationState.ESCALATING
-            session.outcome = SessionOutcome.ESCALATED
-            session.escalation_reason = status
-            session.follow_up_actions = ["Human agent follow-up required."]
-        else:
-            session.conversation_state = ConversationState.ESCALATING
-            session.outcome = SessionOutcome.FAILED
-            session.escalation_reason = "telnyx_ai_gather_unrecognized_result"
-            session.follow_up_actions = ["Review the call log and follow up manually."]
 
     def _build_voicemail_message(self, session: SessionState) -> str:
         issue = session.parsed_intent.issue_type.replace("_", " ")

@@ -32,7 +32,7 @@ class SessionRegistry:
         session_id = self._by_call_session_id.get(call_session_id)
         return self._by_session_id.get(session_id) if session_id else None
 
-    def bind_telnyx_call(self, session: SessionState, call_control_id: str | None, call_session_id: str | None) -> SessionState:
+    def bind_call_leg(self, session: SessionState, call_control_id: str | None, call_session_id: str | None) -> SessionState:
         if call_control_id:
             session.call_control_id = call_control_id
             self._by_call_control_id[call_control_id] = session.session_id
@@ -41,3 +41,8 @@ class SessionRegistry:
             self._by_call_session_id[call_session_id] = session.session_id
         self._by_session_id[session.session_id] = session
         return session
+
+    def clear(self) -> None:
+        self._by_session_id.clear()
+        self._by_call_control_id.clear()
+        self._by_call_session_id.clear()

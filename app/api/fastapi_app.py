@@ -1,18 +1,23 @@
-from fastapi import FastAPI, HTTPException, WebSocket
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+from app.api.routes_twilio_webhooks import create_twilio_router
+from app.api.routes_twilio_ws import create_twilio_ws_router
 from app.config import get_settings
 from app.core.exceptions import ProviderError
 from app.services.session_service import SessionService
 from app.services.session_registry import SessionRegistry
 from app.transport.gradio_transport import GradioTransport
-from app.transport.telnyx_transport import TelnyxTransport
+from app.transport.twilio_transport import TwilioTransport
 
 app = FastAPI(title="Outbound Assistant")
 settings = get_settings()
 registry = SessionRegistry()
-transport = TelnyxTransport() if settings.enable_telnyx_transport else GradioTransport()
+transport = TwilioTransport() if settings.enable_twilio_transport else GradioTransport()
 session_service = SessionService(transport, registry)
+
+app.include_router(create_twilio_router(session_service))
+app.include_router(create_twilio_ws_router())
 
 
 class StartSessionRequest(BaseModel):
@@ -54,20 +59,3 @@ async def handle_turn(session_id: str, request: CustomerTurnRequest):
         raise HTTPException(status_code=404, detail="Session not found")
     session = await session_service.handle_customer_turn(session, request.customer_message)
     return session.model_dump()
-
-
-@app.post("/webhooks/telnyx")
-async def telnyx_webhook(payload: dict):
-    session = await session_service.handle_telnyx_webhook(payload)
-    return {
-        "received": True,
-        "event_type": payload.get("data", {}).get("event_type"),
-        "session_id": session.session_id if session else None,
-    }
-
-
-@app.websocket("/ws/telnyx")
-async def telnyx_media_websocket(websocket: WebSocket):
-    await websocket.accept()
-    await websocket.send_json({"status": "connected", "message": "Telnyx media websocket stub ready"})
-    await websocket.close()
