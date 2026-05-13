@@ -3,7 +3,7 @@
 Minimal telephony-first PoC for an AI outbound caller. The first milestone is a working vertical slice that can:
 
 - parse an unstructured operator instruction
-- create a session and initiate a mocked outbound call
+- create a session and initiate an outbound call
 - run a graph-driven conversation loop
 - handle basic escalation
 - persist transcript, summary, outcome, and errors
@@ -26,6 +26,6 @@ python -m app.main
 
 ## Notes
 
-- `TelnyxTransport` is intentionally mocked for the first pass but follows the transport contract needed for a live adapter.
+- `TelnyxTransport` supports real outbound Call Control and webhook-driven `gather_using_ai` for first-pass live telephony.
 - Gradio is a debug transport, not the core runtime abstraction.
 - The conversation engine uses LangGraph with separate call and conversation state.

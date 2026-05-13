@@ -1,12 +1,18 @@
 from fastapi import FastAPI, HTTPException, WebSocket
 from pydantic import BaseModel
 
+from app.config import get_settings
+from app.core.exceptions import ProviderError
 from app.services.session_service import SessionService
+from app.services.session_registry import SessionRegistry
+from app.transport.gradio_transport import GradioTransport
 from app.transport.telnyx_transport import TelnyxTransport
 
 app = FastAPI(title="Outbound Assistant")
-session_service = SessionService(TelnyxTransport())
-session_store = {}
+settings = get_settings()
+registry = SessionRegistry()
+transport = TelnyxTransport() if settings.enable_telnyx_transport else GradioTransport()
+session_service = SessionService(transport, registry)
 
 
 class StartSessionRequest(BaseModel):
@@ -26,24 +32,38 @@ async def health() -> dict[str, str]:
 @app.post("/sessions")
 async def create_session(request: StartSessionRequest):
     session = await session_service.create_session(request.operator_instruction, request.call_target)
-    session = await session_service.start_session(session)
-    session_store[session.session_id] = session
+    try:
+        session = await session_service.start_session(session)
+    except ProviderError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return session.model_dump()
+
+
+@app.get("/sessions/{session_id}")
+async def get_session(session_id: str):
+    session = registry.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
     return session.model_dump()
 
 
 @app.post("/sessions/{session_id}/turns")
 async def handle_turn(session_id: str, request: CustomerTurnRequest):
-    session = session_store.get(session_id)
+    session = registry.get(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     session = await session_service.handle_customer_turn(session, request.customer_message)
-    session_store[session_id] = session
     return session.model_dump()
 
 
 @app.post("/webhooks/telnyx")
 async def telnyx_webhook(payload: dict):
-    return {"received": True, "payload": payload}
+    session = await session_service.handle_telnyx_webhook(payload)
+    return {
+        "received": True,
+        "event_type": payload.get("data", {}).get("event_type"),
+        "session_id": session.session_id if session else None,
+    }
 
 
 @app.websocket("/ws/telnyx")

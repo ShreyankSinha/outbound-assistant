@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 from app.core.enums import CallState, ConversationState, SessionOutcome
@@ -26,3 +28,12 @@ class SessionState(BaseModel):
     customer_last_message: str = ""
     agent_last_message: str = ""
     call_target: str = "mock-customer"
+    telephony_provider: str = "debug"
+    call_control_id: str | None = None
+    call_session_id: str | None = None
+    call_leg_id: str | None = None
+    telnyx_conversation_id: str | None = None
+    telnyx_gather_started: bool = False
+    telnyx_voicemail_played: bool = False
+    webhook_event_types: list[str] = Field(default_factory=list)
+    gather_result: dict[str, Any] = Field(default_factory=dict)

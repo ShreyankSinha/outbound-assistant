@@ -13,8 +13,9 @@ class VoiceSessionController:
 
     async def start_outbound_call(self, session: SessionState) -> SessionState:
         session = await self.transport.start_session(session)
-        self.lifecycle.transition(session, CallState.ANSWERED)
-        self.lifecycle.transition(session, CallState.ACTIVE)
+        if not self.transport.manages_live_call_lifecycle:
+            self.lifecycle.transition(session, CallState.ANSWERED)
+            self.lifecycle.transition(session, CallState.ACTIVE)
         return session
 
     async def play_response(self, session: SessionState, response_text: str) -> None:

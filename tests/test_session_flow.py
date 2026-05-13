@@ -4,12 +4,13 @@ from pathlib import Path
 import pytest
 
 from app.services.session_service import SessionService
+from app.services.session_registry import SessionRegistry
 from app.transport.gradio_transport import GradioTransport
 
 
 @pytest.mark.asyncio
 async def test_happy_path_resolves_and_persists_log(tmp_path: Path):
-    service = SessionService(GradioTransport())
+    service = SessionService(GradioTransport(), SessionRegistry())
     service.persistence.log_dir = tmp_path
 
     session = await service.create_session(
@@ -34,7 +35,7 @@ async def test_happy_path_resolves_and_persists_log(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_customer_human_request_escalates_and_persists_log(tmp_path: Path):
-    service = SessionService(GradioTransport())
+    service = SessionService(GradioTransport(), SessionRegistry())
     service.persistence.log_dir = tmp_path
 
     session = await service.create_session(
@@ -54,3 +55,43 @@ async def test_customer_human_request_escalates_and_persists_log(tmp_path: Path)
     data = json.loads(log_path.read_text())
     assert data["outcome"] == "escalated"
     assert data["escalation_reason"] == "customer_requested_human"
+
+
+@pytest.mark.asyncio
+async def test_telnyx_ai_gather_webhook_resolves_without_live_call(tmp_path: Path):
+    service = SessionService(GradioTransport(), SessionRegistry())
+    service.persistence.log_dir = tmp_path
+
+    session = await service.create_session(
+        "John Smith hasn't paid his invoice of $450 from 15 April. Follow up and get a payment commitment.",
+        "+61400000000",
+    )
+    session.call_control_id = "call-control-123"
+    session.call_session_id = "call-session-123"
+    service.registry.save(session)
+
+    event = {
+        "data": {
+            "event_type": "call.ai_gather.ended",
+            "payload": {
+                "call_control_id": "call-control-123",
+                "call_session_id": "call-session-123",
+                "result": {
+                    "resolution_status": "payment_committed",
+                    "payment_date": "tomorrow",
+                    "notes": "Customer committed to pay tomorrow.",
+                },
+                "message_history": [
+                    {"role": "assistant", "content": "Can you confirm when payment will be made?"},
+                    {"role": "user", "content": "Yes, I can pay tomorrow."},
+                ],
+            },
+        }
+    }
+
+    updated = await service.handle_telnyx_webhook(event)
+    assert updated is not None
+    assert updated.outcome is not None
+    assert updated.outcome.value == "resolved"
+    assert updated.conversation_state.value == "closing"
+    assert any("pay tomorrow" in entry.content.lower() for entry in updated.transcript)

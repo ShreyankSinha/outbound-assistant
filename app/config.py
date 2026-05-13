@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     telnyx_connection_id: str = Field(default="", alias="TELNYX_CONNECTION_ID")
     telnyx_outbound_from_number: str = Field(default="", alias="TELNYX_OUTBOUND_FROM_NUMBER")
     telnyx_webhook_secret: str = Field(default="", alias="TELNYX_WEBHOOK_SECRET")
+    telnyx_ai_voice: str = Field(default="AWS.Polly.Joanna-Neural", alias="TELNYX_AI_VOICE")
+    telnyx_answering_machine_detection: str = Field(default="detect_beep", alias="TELNYX_ANSWERING_MACHINE_DETECTION")
     groq_model_primary: str = Field(default="llama-3.3-70b-versatile", alias="GROQ_MODEL_PRIMARY")
     groq_model_fallback: str = Field(default="llama-3.1-8b-instant", alias="GROQ_MODEL_FALLBACK")
     whisper_model_size: str = Field(default="small", alias="WHISPER_MODEL_SIZE")

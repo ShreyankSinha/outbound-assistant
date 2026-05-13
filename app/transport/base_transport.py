@@ -7,6 +7,8 @@ from app.schemas.session_state import SessionState
 
 
 class BaseTransport(ABC):
+    manages_live_call_lifecycle = False
+
     @abstractmethod
     async def start_session(self, session: SessionState) -> SessionState:
         raise NotImplementedError
