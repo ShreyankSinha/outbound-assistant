@@ -6,9 +6,9 @@ class CallLifecycleManager:
     allowed_transitions = {
         CallState.INITIATING: {CallState.RINGING, CallState.FAILED},
         CallState.RINGING: {CallState.ANSWERED, CallState.VOICEMAIL_DETECTED, CallState.ENDED, CallState.FAILED},
-        CallState.ANSWERED: {CallState.ACTIVE, CallState.ENDED, CallState.FAILED},
+        CallState.ANSWERED: {CallState.ACTIVE, CallState.VOICEMAIL_DETECTED, CallState.ENDED, CallState.FAILED},
         CallState.VOICEMAIL_DETECTED: {CallState.ENDED},
-        CallState.ACTIVE: {CallState.TRANSFERRING, CallState.ENDED, CallState.FAILED},
+        CallState.ACTIVE: {CallState.VOICEMAIL_DETECTED, CallState.TRANSFERRING, CallState.ENDED, CallState.FAILED},
         CallState.TRANSFERRING: {CallState.ENDED, CallState.FAILED},
         CallState.ENDED: set(),
         CallState.FAILED: set(),

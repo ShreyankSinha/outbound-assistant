@@ -32,8 +32,12 @@ class SessionState(BaseModel):
     call_control_id: str | None = None
     call_session_id: str | None = None
     call_leg_id: str | None = None
-    telnyx_conversation_id: str | None = None
-    telnyx_gather_started: bool = False
-    telnyx_voicemail_played: bool = False
+    twilio_voice_url_absolute: str = ""
+    twilio_status_callback_url_absolute: str = ""
+    twilio_gather_action_url_absolute: str = ""
+    twilio_amd_answered_by: str | None = None
+    twilio_voice_redirects: int = 0
+    voice_gather_started: bool = False
+    voicemail_message_played: bool = False
     webhook_event_types: list[str] = Field(default_factory=list)
     gather_result: dict[str, Any] = Field(default_factory=dict)

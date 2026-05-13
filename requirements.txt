@@ -10,8 +10,7 @@ langgraph
 groq
 tenacity
 orjson
-openai-whisper
-cartesia
+openpyxl
+twilio
 pytest
 pytest-asyncio
-openpyxl
