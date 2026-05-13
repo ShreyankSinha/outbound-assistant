@@ -62,15 +62,20 @@ class GroqLLMClient:
         return "Thanks for taking the call. I'm following up regarding your outstanding matter. Could you let me know the best way to resolve this today?"
 
     def _fallback_parse(self, instruction: str) -> dict[str, Any]:
-        amount_match = re.search(r"(\$?\d[\d,]*(?:\.\d{2})?)", instruction)
+        customer_id_match = re.search(r"customer\s*id\s*(\d+)", instruction, re.IGNORECASE)
+        currency_match = re.search(r"(\$\s*\d[\d,]*(?:\.\d{2})?)", instruction)
+        amount_match = currency_match or re.search(r"owes?\s+(\d[\d,]*(?:\.\d{2})?)", instruction, re.IGNORECASE)
         due_date_match = re.search(r"\b(?:from|on|due)\s+([A-Za-z0-9 ]{3,25})", instruction, re.IGNORECASE)
         name_match = re.search(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b", instruction)
-        issue_type = "unpaid_invoice" if "invoice" in instruction.lower() or "paid" in instruction.lower() else "general_follow_up"
-        resolution = "seek payment commitment" if "commitment" in instruction.lower() or "pay" in instruction.lower() else "clarify and resolve"
+        lowered = instruction.lower()
+        issue_type = "unpaid_invoice" if any(word in lowered for word in ["invoice", "paid", "owes", "overdue"]) else "general_follow_up"
+        resolution = "seek payment commitment" if any(word in lowered for word in ["commitment", "pay", "owes"]) else "clarify and resolve"
         return {
+            "customer_id": int(customer_id_match.group(1)) if customer_id_match else None,
             "issue_type": issue_type,
             "customer_name": name_match.group(1) if name_match else None,
-            "amount": amount_match.group(1) if amount_match else None,
+            "phone_number": None,
+            "amount": amount_match.group(1).replace(" ", "").rstrip(".,") if amount_match else None,
             "due_date": due_date_match.group(1).strip() if due_date_match else None,
             "reference_number": None,
             "desired_resolution": resolution,

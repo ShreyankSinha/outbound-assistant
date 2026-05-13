@@ -83,5 +83,11 @@ class TelnyxCallControlClient:
     async def _post(self, path: str, payload: dict) -> dict:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(f"{self.base_url}{path}", headers=self._headers(), json=payload)
-            response.raise_for_status()
+            if response.is_error:
+                detail = response.text
+                raise httpx.HTTPStatusError(
+                    f"{response.status_code} {response.reason_phrase}: {detail}",
+                    request=response.request,
+                    response=response,
+                )
             return response.json()

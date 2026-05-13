@@ -3,6 +3,10 @@ from pathlib import Path
 
 import pytest
 
+import pandas as pd
+
+from app.services.customer_directory import CustomerDirectory
+from app.services.outbound_prep_service import OutboundPrepService
 from app.services.session_service import SessionService
 from app.services.session_registry import SessionRegistry
 from app.transport.gradio_transport import GradioTransport
@@ -95,3 +99,24 @@ async def test_telnyx_ai_gather_webhook_resolves_without_live_call(tmp_path: Pat
     assert updated.outcome.value == "resolved"
     assert updated.conversation_state.value == "closing"
     assert any("pay tomorrow" in entry.content.lower() for entry in updated.transcript)
+
+
+@pytest.mark.asyncio
+async def test_mock_prompt_prepares_personalized_call_from_customer_directory(tmp_path: Path):
+    workbook = tmp_path / "customers.xlsx"
+    pd.DataFrame(
+        [
+            {"customer_id": 14, "customer_name": "Ava Thompson", "phone_number": "+61400000014"},
+        ]
+    ).to_excel(workbook, index=False)
+
+    service = SessionService(GradioTransport(), SessionRegistry())
+    prep = OutboundPrepService(CustomerDirectory(workbook), service)
+
+    result = await prep.prepare_from_instruction("Customer ID 14, still owes $450, can you call them for me.")
+
+    assert result.customer_record.customer_name == "Ava Thompson"
+    assert result.parsed_intent.customer_id == 14
+    assert result.parsed_intent.amount == "$450"
+    assert "Ava Thompson" in result.personalized_message
+    assert "$450" in result.personalized_message

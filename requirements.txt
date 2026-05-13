@@ -14,3 +14,4 @@ openai-whisper
 cartesia
 pytest
 pytest-asyncio
+openpyxl

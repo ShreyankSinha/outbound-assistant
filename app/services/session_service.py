@@ -39,11 +39,12 @@ class SessionService:
         return self.registry.save(session)
 
     async def start_session(self, session: SessionState) -> SessionState:
-        session.agent_last_message = await self.responses.generate(
-            state=ConversationState.GREETING,
-            intent=session.parsed_intent,
-            transcript=session.transcript,
-        )
+        if not session.agent_last_message:
+            session.agent_last_message = await self.responses.generate(
+                state=ConversationState.GREETING,
+                intent=session.parsed_intent,
+                transcript=session.transcript,
+            )
         self.transcripts.add_entry(session, "agent", session.agent_last_message)
         session = await self.voice.start_outbound_call(session)
         if self.voice.transport.manages_live_call_lifecycle:
