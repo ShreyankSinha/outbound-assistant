@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 
 from twilio.base.exceptions import TwilioRestException
 
+from app.config import get_settings
 from app.core.enums import CallState
 from app.core.exceptions import ProviderError
 from app.orchestration.call_lifecycle_manager import CallLifecycleManager
@@ -29,7 +30,28 @@ class TwilioTransport(BaseTransport):
         self.lifecycle.transition(session, CallState.RINGING)
         if not session.call_target.startswith("+"):
             raise ProviderError("Twilio outbound calls require an E.164 destination number.")
-        sim_url = session.twilio_simulation_url_absolute or None
+
+        # Read simulation mode FRESH at call time — not from the session field
+        # populated earlier by SessionService, which may have used a stale
+        # settings cache.  This is the single authoritative check.
+        current_settings = get_settings()
+        sim_url: str | None = None
+        if current_settings.twilio_simulation_mode:
+            # Derive the ngrok root from the status callback URL already set
+            # on the session (guaranteed populated before we get here).
+            status_url = session.twilio_status_callback_url_absolute
+            if status_url:
+                base = status_url.rstrip("/").rsplit("/webhooks", 1)[0]
+                sim_url = f"{base}/outbound-call"
+                # Keep session field in sync so the sim routes can read it
+                session.twilio_simulation_url_absolute = sim_url
+
+        effective_to = current_settings.twilio_phone_number if sim_url else session.call_target
+        print(
+            f"[TwilioTransport.start_session] simulation_mode={current_settings.twilio_simulation_mode}  "
+            f"sim_url={sim_url!r}  call_target={session.call_target!r}  effective_to={effective_to!r}"
+        )
+
         try:
             result = self.outbound.create_outbound_call(
                 to_number=session.call_target,
