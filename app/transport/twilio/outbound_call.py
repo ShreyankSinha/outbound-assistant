@@ -50,7 +50,7 @@ class TwilioOutboundCall:
         except TwilioRestException as exc:
             logger.warning(
                 "twilio_calls_create_failed",
-                extra={"status": exc.status, "msg": str(exc), "session_id": session_id},
+                extra={"status": exc.status, "error_msg": str(exc), "session_id": session_id},
             )
             raise
         return {"sid": call.sid, "status": call.status}

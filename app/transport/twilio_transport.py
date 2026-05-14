@@ -60,7 +60,7 @@ class TwilioTransport(BaseTransport):
                 self.control.hangup(session.call_control_id)
             except TwilioRestException as exc:
                 session.errors.append(f"twilio_hangup_failed:{exc.status}:{exc.msg}")
-                logger.warning("twilio_hangup_failed", extra={"session_id": session.session_id, "msg": str(exc)})
+                logger.warning("twilio_hangup_failed", extra={"session_id": session.session_id, "error_msg": str(exc)})
         if session.call_state != CallState.ENDED:
             self.lifecycle.transition(session, CallState.ENDED)
         return session
