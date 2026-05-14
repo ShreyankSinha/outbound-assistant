@@ -29,6 +29,7 @@ class TwilioTransport(BaseTransport):
         self.lifecycle.transition(session, CallState.RINGING)
         if not session.call_target.startswith("+"):
             raise ProviderError("Twilio outbound calls require an E.164 destination number.")
+        sim_url = session.twilio_simulation_url_absolute or None
         try:
             result = self.outbound.create_outbound_call(
                 to_number=session.call_target,
@@ -36,6 +37,7 @@ class TwilioTransport(BaseTransport):
                 voice_url_absolute=session.twilio_voice_url_absolute,
                 status_callback_url=session.twilio_status_callback_url_absolute,
                 async_amd_status_callback_url=session.twilio_status_callback_url_absolute,
+                simulation_url_absolute=sim_url,
             )
         except TwilioRestException as exc:
             err = f"twilio_create_call_failed:{exc.status}:{getattr(exc, 'msg', str(exc))}"
