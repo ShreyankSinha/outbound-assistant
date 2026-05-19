@@ -68,7 +68,7 @@ async def agent_node(
                 "tools_to_call": [],
             }
 
-        follow_up = await generator.generate_topic_follow_up(intent, transcript, 1)
+        follow_up = await generator.generate_topic_follow_up(intent, transcript, 1, customer_message)
         return {
             "next_state": "topic_one",
             "conversation_state": ConversationState.UNDERSTANDING.value,

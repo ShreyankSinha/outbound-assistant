@@ -135,3 +135,51 @@ async def test_mock_prompt_prepares_personalized_call_from_customer_directory(tm
     assert result.parsed_intent.topic_one == "Find out what the customer's plans are for the project they are working on"
     assert result.parsed_intent.topic_two == "the timeline"
     assert "Ava Thompson" in result.personalized_message
+
+
+@pytest.mark.asyncio
+async def test_topic_follow_up_uses_full_up_to_date_transcript(tmp_path: Path):
+    service = _build_service(tmp_path)
+    session = await service.create_session(
+        "Customer ID 1. Find out what the customer's plans are for the project they are working on."
+    )
+    session = await service.start_session(session)
+
+    captured: dict[str, str] = {}
+
+    async def fake_complete(system_prompt: str, user_prompt: str, prefer_fallback: bool = False) -> str:
+        captured["system_prompt"] = system_prompt
+        captured["user_prompt"] = user_prompt
+        return "What are the next steps after the August pilot?"
+
+    service.responses.llm_client.client = object()
+    service.responses.llm_client.complete = AsyncMock(side_effect=fake_complete)
+    service.responses.judge_topic_transition = AsyncMock(
+        return_value={"topic_one_complete": False, "reasoning": "Still gathering details on topic one."}
+    )
+
+    session = await service.handle_customer_turn(session, "We're planning an August pilot and then a wider rollout.")
+
+    assert session.agent_last_message == "What are the next steps after the August pilot?"
+    assert "Latest customer message: We're planning an August pilot and then a wider rollout." in captured["user_prompt"]
+    assert "[AGENT]" in captured["user_prompt"]
+    assert "[CUSTOMER] We're planning an August pilot and then a wider rollout." in captured["user_prompt"]
+
+
+@pytest.mark.asyncio
+async def test_closing_message_strips_meta_text_from_llm_output(tmp_path: Path):
+    service = _build_service(tmp_path)
+    session = await service.create_session(
+        "Customer ID 1. Find out what the customer's plans are for the project they are working on."
+    )
+    session = await service.start_session(session)
+    session = await service.apply_customer_speech(session, "We're planning to roll it out next quarter.")
+
+    service.responses.llm_client.client = object()
+    service.responses.llm_client.complete = AsyncMock(
+        return_value="Here's a natural closing for the call:\nThanks for your time today. Goodbye."
+    )
+
+    closing = await service.responses.generate_closing_message(session.parsed_intent, session.transcript)
+
+    assert closing == "Thanks for your time today. Goodbye."

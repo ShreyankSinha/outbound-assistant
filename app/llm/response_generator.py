@@ -6,6 +6,7 @@ from app.llm.prompts import (
     CLOSING_PROMPT,
     OPENING_MESSAGE_PROMPT,
     SUMMARY_GENERATION_PROMPT,
+    TOPIC_FOLLOW_UP_PROMPT,
     TOPIC_TRANSITION_PROMPT,
 )
 from app.schemas.parsed_intent import ParsedIntent
@@ -44,7 +45,8 @@ class ResponseGenerator:
             f"Topic two: {intent.topic_two or 'N/A'}\n"
             f"Single topic: {intent.single_topic}"
         )
-        return await self.llm_client.complete(OPENING_MESSAGE_PROMPT, user_prompt, prefer_fallback=True)
+        raw = await self.llm_client.complete(OPENING_MESSAGE_PROMPT, user_prompt, prefer_fallback=True)
+        return self._clean_spoken_response(raw, fallback)
 
     async def judge_topic_transition(self, intent: ParsedIntent, transcript: list[TranscriptEntry]) -> dict[str, object]:
         if not self.llm_client.client:
@@ -75,11 +77,23 @@ class ResponseGenerator:
         intent: ParsedIntent,
         transcript: list[TranscriptEntry],
         topic_number: int,
+        customer_message: str = "",
     ) -> str:
         topic = intent.topic_one if topic_number == 1 else (intent.topic_two or intent.topic_one)
-        if topic_number == 1:
-            return f"Thanks. Could you tell me a little more about {topic.rstrip('.')}?"
-        return f"That makes sense. What can you share about {topic.rstrip('.')}?"
+        fallback = self._fallback_topic_follow_up(topic, customer_message, topic_number)
+        if not self.llm_client.client:
+            return fallback
+
+        user_prompt = (
+            f"Current topic number: {topic_number}\n"
+            f"Current topic label: {topic}\n"
+            f"Topic one: {intent.topic_one}\n"
+            f"Topic two: {intent.topic_two or 'N/A'}\n"
+            f"Latest customer message: {customer_message or 'N/A'}\n"
+            f"Transcript:\n{self._transcript_text(transcript)}"
+        )
+        raw = await self.llm_client.complete(TOPIC_FOLLOW_UP_PROMPT, user_prompt, prefer_fallback=True)
+        return self._clean_spoken_response(raw, fallback)
 
     async def generate_closing_message(self, intent: ParsedIntent, transcript: list[TranscriptEntry]) -> str:
         fallback = "Thanks for your time today. That covers everything I needed, so I'll let you go. Goodbye."
@@ -90,7 +104,8 @@ class ResponseGenerator:
             f"Topic two: {intent.topic_two or 'N/A'}\n"
             f"Transcript:\n{self._transcript_text(transcript)}"
         )
-        return await self.llm_client.complete(CLOSING_PROMPT, user_prompt, prefer_fallback=True)
+        raw = await self.llm_client.complete(CLOSING_PROMPT, user_prompt, prefer_fallback=True)
+        return self._clean_spoken_response(raw, fallback)
 
     async def generate_summary(self, intent: ParsedIntent, transcript: list[TranscriptEntry]) -> str:
         fallback = self._fallback_summary(intent, transcript)
@@ -109,6 +124,48 @@ class ResponseGenerator:
         return "\n".join(f"[{entry.role.upper()}] {entry.content}" for entry in transcript) or "No transcript yet."
 
     @staticmethod
+    def _clean_spoken_response(raw: str, fallback: str) -> str:
+        text = (raw or "").strip()
+        if not text:
+            return fallback
+
+        text = text.replace("```", "").strip()
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if not lines:
+            return fallback
+
+        meta_prefixes = (
+            "here's",
+            "here is",
+            "natural closing",
+            "closing message",
+            "closing:",
+            "opening message",
+            "opening:",
+            "spoken message",
+            "agent message",
+            "response:",
+        )
+
+        first_line = lines[0].lower()
+        if first_line.startswith(meta_prefixes):
+            lines = lines[1:]
+        elif ":" in lines[0]:
+            prefix, remainder = lines[0].split(":", maxsplit=1)
+            if prefix.strip().lower() in {
+                "closing",
+                "closing message",
+                "opening",
+                "opening message",
+                "agent message",
+                "response",
+            }:
+                lines[0] = remainder.strip()
+
+        cleaned = " ".join(line for line in lines if line).strip().strip("\"'")
+        return cleaned or fallback
+
+    @staticmethod
     def _fallback_opening(intent: ParsedIntent) -> str:
         if intent.single_topic or not intent.topic_two:
             return (
@@ -119,6 +176,18 @@ class ResponseGenerator:
             f"Hi, this is Alex calling on behalf of iSoft. I was hoping to ask you a few questions about "
             f"{intent.topic_one.rstrip('.')} and get a sense of {intent.topic_two.rstrip('.').lower()} if you have a moment."
         )
+
+    @staticmethod
+    def _fallback_topic_follow_up(topic: str, customer_message: str, topic_number: int) -> str:
+        if topic_number == 1:
+            if customer_message:
+                return f"Thanks, that helps. What else can you tell me about {topic.rstrip('.')}?"
+            return f"Thanks. Could you tell me a little more about {topic.rstrip('.')}?"
+        if customer_message:
+            return f"That makes sense. What more can you share about {topic.rstrip('.')}?"
+        if topic_number == 1:
+            return f"Thanks. Could you tell me a little more about {topic.rstrip('.')}?"
+        return f"That makes sense. What can you share about {topic.rstrip('.')}?"
 
     @staticmethod
     def _fallback_transition_judgment(transcript: list[TranscriptEntry]) -> dict[str, object]:

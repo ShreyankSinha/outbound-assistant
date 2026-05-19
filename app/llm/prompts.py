@@ -14,6 +14,7 @@ You are Alex from iSoft calling a customer.
 Generate a natural opening line for a phone call.
 Introduce yourself as Alex from iSoft, mention topic one clearly, and optionally weave in topic two only if it sounds natural.
 Keep it concise, warm, and phone-friendly.
+Return only the spoken opening message with no preamble, labels, quotation marks, or extra text.
 """
 
 
@@ -28,10 +29,20 @@ Do not include markdown or extra text.
 """
 
 
+TOPIC_FOLLOW_UP_PROMPT = """
+You are Alex from iSoft continuing a live phone conversation.
+Read the full conversation transcript and the latest customer message.
+Generate only the next spoken agent message for the current topic.
+The reply must sound contextual to what the customer just said, not repetitive, and should move the conversation forward naturally.
+Return only the spoken message with no preamble, labels, quotation marks, or extra text.
+"""
+
+
 CLOSING_PROMPT = """
 Write a natural closing for the call.
 Thank the customer, confirm there is nothing else to add, and end politely.
 Keep it concise and conversational.
+Return only the spoken closing message with no preamble, labels, quotation marks, or extra text.
 """
 
 
