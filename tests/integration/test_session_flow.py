@@ -10,6 +10,7 @@ from app.services.outbound_prep_service import OutboundPrepService
 from app.services.session_service import SessionService
 from app.services.session_registry import SessionRegistry
 from app.transport.gradio_transport import GradioTransport
+from unittest.mock import AsyncMock, patch
 
 
 @pytest.mark.asyncio
@@ -20,10 +21,20 @@ async def test_happy_path_resolves_and_persists_log(tmp_path: Path):
     session = await service.create_session(
         "John Smith hasn't paid his invoice of $450 from 15 April. Follow up and get a payment commitment."
     )
-    session = await service.start_session(session)
-    session = await service.handle_customer_turn(session, "Okay, what's this about?")
-    session = await service.handle_customer_turn(session, "Yes, I can pay tomorrow")
-    session = await service.handle_customer_turn(session, "Thanks, bye.")
+    
+    with patch("app.llm.groq_client.GroqLLMClient.complete", new_callable=AsyncMock) as mock_complete:
+        import json
+        mock_complete.side_effect = [
+            json.dumps({"next_state": "understanding", "agent_message": "Hello, I am calling about..."}),
+            json.dumps({"next_state": "negotiating", "agent_message": "Can you pay today?"}),
+            json.dumps({"next_state": "confirming", "tools_to_call": [{"name": "log_payment_commitment", "args": {"date": "tomorrow", "amount": "$450"}}], "agent_message": "Thank you, noted."}),
+            json.dumps({"next_state": "closing", "agent_message": "Goodbye!"})
+        ] + [json.dumps({"next_state": "closing", "agent_message": "Goodbye!"})] * 5
+        
+        session = await service.start_session(session)
+        session = await service.handle_customer_turn(session, "Okay, what's this about?")
+        session = await service.handle_customer_turn(session, "Yes, I can pay tomorrow")
+        session = await service.handle_customer_turn(session, "Thanks, bye.")
 
     assert session.outcome is not None
     assert session.outcome.value == "resolved"
@@ -46,8 +57,16 @@ async def test_customer_human_request_escalates_and_persists_log(tmp_path: Path)
     session = await service.create_session(
         "This customer has an overdue invoice. Call and discuss next steps."
     )
-    session = await service.start_session(session)
-    session = await service.handle_customer_turn(session, "I want to speak to a human")
+    
+    with patch("app.llm.groq_client.GroqLLMClient.complete", new_callable=AsyncMock) as mock_complete:
+        import json
+        mock_complete.side_effect = [
+            json.dumps({"next_state": "understanding", "agent_message": "Hello, I am calling about..."}),
+            json.dumps({"next_state": "escalating", "tools_to_call": [{"name": "escalate_to_human", "args": {"reason": "requested human"}}], "agent_message": "I'll transfer you now."}),
+        ] + [json.dumps({"next_state": "closing", "agent_message": "Goodbye!"})] * 5
+        
+        session = await service.start_session(session)
+        session = await service.handle_customer_turn(session, "I want to speak to a human")
 
     assert session.outcome is not None
     assert session.outcome.value == "escalated"
@@ -79,15 +98,23 @@ async def test_twilio_gather_resolves_without_live_call(tmp_path: Path):
     session.voice_gather_started = True
     service.registry.save(session)
 
-    await service.handle_twilio_gather(
-        {"CallSid": "call-control-123", "SpeechResult": "Okay, what's this about?"}
-    )
-    await service.handle_twilio_gather(
-        {"CallSid": "call-control-123", "SpeechResult": "Yes, I can pay tomorrow."}
-    )
-    _, twiml = await service.handle_twilio_gather(
-        {"CallSid": "call-control-123", "SpeechResult": "Thanks, bye."}
-    )
+    with patch("app.llm.groq_client.GroqLLMClient.complete", new_callable=AsyncMock) as mock_complete:
+        import json
+        mock_complete.side_effect = [
+            json.dumps({"next_state": "negotiating", "agent_message": "Can you pay today?"}),
+            json.dumps({"next_state": "confirming", "tools_to_call": [{"name": "log_payment_commitment", "args": {"date": "tomorrow", "amount": "$450"}}], "agent_message": "Thank you, noted."}),
+            json.dumps({"next_state": "closing", "agent_message": "Goodbye!"})
+        ] + [json.dumps({"next_state": "closing", "agent_message": "Goodbye!"})] * 5
+        
+        await service.handle_twilio_gather(
+            {"CallSid": "call-control-123", "SpeechResult": "Okay, what's this about?"}
+        )
+        await service.handle_twilio_gather(
+            {"CallSid": "call-control-123", "SpeechResult": "Yes, I can pay tomorrow."}
+        )
+        _, twiml = await service.handle_twilio_gather(
+            {"CallSid": "call-control-123", "SpeechResult": "Thanks, bye."}
+        )
     updated = service.registry.get(session.session_id)
     assert updated is not None
     assert updated.outcome is not None

@@ -32,10 +32,19 @@ async def agent_node(state: GraphState, intent: ParsedIntent) -> GraphState:
     except ValueError:
         next_state_val = current_state.value
 
+    resolution_note = decision.get("resolution_note", "")
+    
+    # Transcript growth logging
+    turn_count = len(transcript)
+    char_count = sum(len(t.content) for t in transcript if t.content)
+    if turn_count > 20 or char_count > 10000:
+        warning = f"Warning: Transcript exceeded limits (turns={turn_count}, chars={char_count})."
+        resolution_note = f"{warning} {resolution_note}".strip()
+
     return {
         "conversation_state": next_state_val,
         "latest_agent_message": decision.get("agent_message", ""),
-        "resolution_note": decision.get("resolution_note", ""),
+        "resolution_note": resolution_note,
         "tools_to_call": decision.get("tools_to_call", []),
     }
 

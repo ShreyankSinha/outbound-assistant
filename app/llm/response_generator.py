@@ -4,6 +4,7 @@ from app.core.enums import ConversationState
 from app.llm.groq_client import GroqLLMClient
 from app.schemas.parsed_intent import ParsedIntent
 from app.schemas.transcript import TranscriptEntry
+from app.llm.prompts import DECISION_SYSTEM_PROMPT
 
 
 class ResponseGenerator:
@@ -28,19 +29,6 @@ class ResponseGenerator:
         transcript: list[TranscriptEntry],
         customer_message: str = "",
     ) -> dict:
-        system_prompt = (
-            "You are a professional outbound voice agent. Keep replies concise, natural, and phone-friendly. "
-            "Do not invent facts. Use only details from the parsed operator instruction and transcript. "
-            "You must respond with a strict JSON object (no markdown, just JSON) containing:\n"
-            '{\n  "next_state": "greeting | understanding | negotiating | confirming | closing | escalating | voicemail",\n'
-            '  "reasoning": "brief explanation of why",\n'
-            '  "resolution_note": "what was agreed if anything",\n'
-            '  "tools_to_call": [{"name": "tool_name", "args": {"arg": "val"}}],\n'
-            '  "agent_message": "what the agent should say next"\n}\n'
-            "Available tools: log_payment_commitment(date, amount), resend_invoice(email), escalate_to_human(reason), log_dispute(reason), schedule_callback(date). "
-            "Use the customer's latest message in context. "
-            "Keywords hints: 'okay', 'next week' may indicate agreement; 'paid', 'wrong' may indicate dispute. But make the final decision holistically based on the transcript."
-        )
         transcript_text = "\n".join(f"{entry.role}: {entry.content}" for entry in transcript[-6:])
         user_prompt = (
             f"Conversation state: {state.value}\n"
@@ -49,4 +37,30 @@ class ResponseGenerator:
             f"Latest customer message: {customer_message or 'N/A'}\n"
             "Return the JSON decision."
         )
-        return await self.llm_client.complete_json(system_prompt, user_prompt)
+        
+        valid_states = {"greeting", "understanding", "negotiating", "confirming", "closing", "escalating", "voicemail"}
+        
+        # We will use complete() and parse manually so we have the raw response to log.
+        for attempt in range(2):
+            raw_response = await self.llm_client.complete(DECISION_SYSTEM_PROMPT, user_prompt)
+            try:
+                import json
+                decision = json.loads(raw_response)
+                next_state = decision.get("next_state")
+                agent_message = decision.get("agent_message")
+                
+                if next_state in valid_states and agent_message:
+                    return decision
+            except Exception:
+                pass
+                
+        # If it fails twice, return fallback
+        turn_number = len(transcript)
+        fallback_note = f"LLM parsing failed. state={state.value}, turn={turn_number}. Raw response: {raw_response}"
+        return {
+            "next_state": state.value,
+            "agent_message": "Sorry, give me one moment while I check that for you.",
+            "tools_to_call": [],
+            "reasoning": "fallback: LLM response was malformed after 1 retry",
+            "resolution_note": fallback_note
+        }
