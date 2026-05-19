@@ -37,7 +37,7 @@ async def agent_node(
     if current_topic == 1 and not topic_one_complete:
         transition = await generator.judge_topic_transition(intent, transcript)
         reasoning = str(transition.get("reasoning") or "Continuing topic one.")
-        if bool(transition.get("topic_one_complete")):
+        if bool(transition.get("topic_complete", transition.get("topic_one_complete"))):
             topic_one_complete = True
             if intent.single_topic or not intent.topic_two:
                 closing = await generator.generate_closing_message(intent, transcript)
@@ -83,16 +83,32 @@ async def agent_node(
         }
 
     if current_topic == 2 and topic_two_complete is False:
-        closing = await generator.generate_closing_message(intent, transcript)
-        reasoning = "Topic two was discussed, so the call can close naturally."
+        transition = await generator.judge_topic_completion(intent, transcript, topic_number=2)
+        reasoning = str(transition.get("reasoning") or "Continuing topic two.")
+        if bool(transition.get("topic_complete")):
+            closing = await generator.generate_closing_message(intent, transcript)
+            return {
+                "next_state": ConversationState.CLOSING.value,
+                "conversation_state": ConversationState.CLOSING.value,
+                "agent_message": closing,
+                "latest_agent_message": closing,
+                "current_topic": 2,
+                "topic_one_complete": True,
+                "topic_two_complete": True,
+                "reasoning": reasoning,
+                "resolution_note": warning_note or "",
+                "tools_to_call": [],
+            }
+
+        follow_up = await generator.generate_topic_follow_up(intent, transcript, 2, customer_message)
         return {
-            "next_state": ConversationState.CLOSING.value,
-            "conversation_state": ConversationState.CLOSING.value,
-            "agent_message": closing,
-            "latest_agent_message": closing,
+            "next_state": "topic_two",
+            "conversation_state": ConversationState.NEGOTIATING.value,
+            "agent_message": follow_up,
+            "latest_agent_message": follow_up,
             "current_topic": 2,
             "topic_one_complete": True,
-            "topic_two_complete": True,
+            "topic_two_complete": False,
             "reasoning": reasoning,
             "resolution_note": warning_note or "",
             "tools_to_call": [],

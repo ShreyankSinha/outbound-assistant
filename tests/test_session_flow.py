@@ -71,12 +71,15 @@ async def test_customer_human_request_escalates_and_persists_log(tmp_path: Path)
 @pytest.mark.asyncio
 async def test_two_topic_flow_and_log_creation(tmp_path: Path):
     service = _build_service(tmp_path)
-    service.responses.judge_topic_transition = AsyncMock(
+    service.responses.judge_topic_completion = AsyncMock(
         side_effect=[
-            {"topic_one_complete": False, "reasoning": "Need a bit more detail on topic one."},
-            {"topic_one_complete": True, "reasoning": "Topic one is complete, so we can move to topic two."},
+            {"topic_complete": False, "reasoning": "Need a bit more detail on topic one."},
+            {"topic_complete": True, "reasoning": "Topic one is complete, so we can move to topic two."},
+            {"topic_complete": False, "reasoning": "The customer has not answered the timeline question yet."},
+            {"topic_complete": True, "reasoning": "The customer gave a meaningful timeline answer."},
         ]
     )
+    service.responses.judge_topic_transition = service.responses.judge_topic_completion
 
     session = await service.create_session(
         "Customer ID 1. Find out what the customer's plans are for the project they are working on and get a sense of the timeline."
@@ -88,6 +91,7 @@ async def test_two_topic_flow_and_log_creation(tmp_path: Path):
     assert session.current_topic == 1
     assert session.topic_one_complete is False
     assert session.topic_two_complete is False
+    assert "timeline" not in session.agent_last_message.lower()
 
     session = await service.handle_customer_turn(session, "The team wants to start implementation once the plan is agreed.")
     assert session.outcome is None
@@ -95,6 +99,13 @@ async def test_two_topic_flow_and_log_creation(tmp_path: Path):
     assert session.topic_one_complete is True
     assert session.topic_two_complete is False
     assert "timeline" in session.agent_last_message.lower()
+
+    session = await service.handle_customer_turn(session, "and?")
+    assert session.outcome is None
+    assert session.current_topic == 2
+    assert session.topic_two_complete is False
+    assert session.conversation_state.value == "negotiating"
+    assert "goodbye" not in session.agent_last_message.lower()
 
     session = await service.handle_customer_turn(session, "If everything lines up, we'd aim for late August.")
     assert session.outcome is not None
@@ -161,6 +172,7 @@ async def test_topic_follow_up_uses_full_up_to_date_transcript(tmp_path: Path):
     session = await service.handle_customer_turn(session, "We're planning an August pilot and then a wider rollout.")
 
     assert session.agent_last_message == "What are the next steps after the August pilot?"
+    assert "Stay strictly focused on the current topic only." in captured["system_prompt"]
     assert "Latest customer message: We're planning an August pilot and then a wider rollout." in captured["user_prompt"]
     assert "[AGENT]" in captured["user_prompt"]
     assert "[CUSTOMER] We're planning an August pilot and then a wider rollout." in captured["user_prompt"]
@@ -183,3 +195,29 @@ async def test_closing_message_strips_meta_text_from_llm_output(tmp_path: Path):
     closing = await service.responses.generate_closing_message(session.parsed_intent, session.transcript)
 
     assert closing == "Thanks for your time today. Goodbye."
+
+
+@pytest.mark.asyncio
+async def test_topic_two_completion_closes_before_max_turn_escalation(tmp_path: Path):
+    service = _build_service(tmp_path)
+    service.responses.judge_topic_completion = AsyncMock(
+        side_effect=[
+            {"topic_complete": True, "reasoning": "Topic one is complete."},
+            {"topic_complete": True, "reasoning": "Topic two is complete."},
+        ]
+    )
+    service.responses.judge_topic_transition = service.responses.judge_topic_completion
+
+    session = await service.create_session(
+        "Customer ID 1. Find out what the customer's plans are for the project they are working on and get a sense of the timeline."
+    )
+    session = await service.start_session(session)
+    session = await service.handle_customer_turn(session, "We're building the platform in phases.")
+    session.turn_count = service.settings.max_turns_before_escalation - 1
+
+    session = await service.handle_customer_turn(session, "The team is targeting six months and an end-of-Q3 launch.")
+
+    assert session.outcome is not None
+    assert session.outcome.value == "resolved"
+    assert session.conversation_state.value == "closing"
+    assert session.escalation_reason is None

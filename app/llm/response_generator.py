@@ -49,9 +49,21 @@ class ResponseGenerator:
         return self._clean_spoken_response(raw, fallback)
 
     async def judge_topic_transition(self, intent: ParsedIntent, transcript: list[TranscriptEntry]) -> dict[str, object]:
+        return await self.judge_topic_completion(intent, transcript, topic_number=1)
+
+    async def judge_topic_completion(
+        self,
+        intent: ParsedIntent,
+        transcript: list[TranscriptEntry],
+        topic_number: int,
+    ) -> dict[str, object]:
+        topic_label = intent.topic_one if topic_number == 1 else (intent.topic_two or intent.topic_one)
+        fallback = self._fallback_transition_judgment(transcript, topic_number, intent.single_topic)
         if not self.llm_client.client:
-            return self._fallback_transition_judgment(transcript)
+            return fallback
         user_prompt = (
+            f"Current topic number: {topic_number}\n"
+            f"Current topic label: {topic_label}\n"
             f"Topic one: {intent.topic_one}\n"
             f"Topic two: {intent.topic_two or 'N/A'}\n"
             f"Transcript:\n{self._transcript_text(transcript)}"
@@ -59,10 +71,10 @@ class ResponseGenerator:
         try:
             result = await self.llm_client.complete_json(TOPIC_TRANSITION_PROMPT, user_prompt)
         except Exception:
-            result = self._fallback_transition_judgment(transcript)
+            result = fallback
         return {
-            "topic_one_complete": bool(result.get("topic_one_complete")),
-            "reasoning": str(result.get("reasoning") or "Topic one needs a little more discussion."),
+            "topic_complete": bool(result.get("topic_complete", result.get("topic_one_complete"))),
+            "reasoning": str(result.get("reasoning") or "This topic needs a little more discussion."),
         }
 
     async def generate_topic_transition_message(self, intent: ParsedIntent, transcript: list[TranscriptEntry]) -> str:
@@ -190,17 +202,38 @@ class ResponseGenerator:
         return f"That makes sense. What can you share about {topic.rstrip('.')}?"
 
     @staticmethod
-    def _fallback_transition_judgment(transcript: list[TranscriptEntry]) -> dict[str, object]:
+    def _fallback_transition_judgment(
+        transcript: list[TranscriptEntry],
+        topic_number: int,
+        single_topic: bool,
+    ) -> dict[str, object]:
         customer_turns = [entry for entry in transcript if entry.role.lower() == "customer"]
         last_customer = customer_turns[-1].content.lower() if customer_turns else ""
-        complete = len(customer_turns) >= 2 or any(
-            phrase in last_customer
-            for phrase in ["we're", "we are", "plan", "timeline", "next", "by", "around", "should be", "expect"]
+        non_answers = {"and?", "and", "okay", "ok", "fine", "sure", "right", "yep", "yes"}
+        if topic_number == 1:
+            if single_topic:
+                complete = (
+                    bool(last_customer)
+                    and last_customer not in non_answers
+                    and len(last_customer.split()) >= 4
+                )
+            else:
+                complete = len(customer_turns) >= 2
+            reasoning = "The customer has given enough context on topic one to move forward." if complete else (
+                "The customer has not given enough detail on topic one yet."
+            )
+            return {"topic_complete": complete, "reasoning": reasoning}
+
+        complete = (
+            bool(last_customer)
+            and last_customer not in non_answers
+            and len(last_customer.split()) >= 4
+            and not any(phrase in last_customer for phrase in ["human", "person", "agent", "representative"])
         )
-        reasoning = "The customer has given enough context on topic one to move forward." if complete else (
-            "The customer has not given enough detail on topic one yet."
+        reasoning = "The customer gave a meaningful answer on topic two." if complete else (
+            "The customer has not answered topic two in a meaningful way yet."
         )
-        return {"topic_one_complete": complete, "reasoning": reasoning}
+        return {"topic_complete": complete, "reasoning": reasoning}
 
     @staticmethod
     def _fallback_summary(intent: ParsedIntent, transcript: list[TranscriptEntry]) -> str:

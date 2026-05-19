@@ -99,10 +99,6 @@ class SessionService:
             session.conversation_state = ConversationState.ESCALATING
             session.escalation_reason = "customer_requested_human"
             session.agent_last_message = "I understand. I'll arrange a human follow-up from here."
-        elif session.turn_count >= self.settings.max_turns_before_escalation:
-            session.conversation_state = ConversationState.ESCALATING
-            session.escalation_reason = "max_turns_before_escalation"
-            session.agent_last_message = "I'll connect this to a human follow-up because we haven't resolved it yet."
         else:
             previous_topic = session.current_topic
             graph_state = await agent_node(
@@ -127,6 +123,14 @@ class SessionService:
             if previous_topic == 1 and session.current_topic == 2:
                 self._append_resolution_note(session, f"topic_transition_turn:{session.turn_count}")
             session.agent_last_message = graph_state.get("agent_message") or graph_state.get("latest_agent_message", "")
+            if (
+                session.conversation_state not in {ConversationState.CLOSING, ConversationState.ESCALATING, ConversationState.VOICEMAIL}
+                and session.turn_count >= self.settings.max_turns_before_escalation
+                and self._needs_dispute_escalation(customer_message)
+            ):
+                session.conversation_state = ConversationState.ESCALATING
+                session.escalation_reason = "unresolved_dispute"
+                session.agent_last_message = "I understand. I'll arrange a human follow-up from here."
 
         self.transcripts.add_entry(session, "agent", session.agent_last_message)
         return session
@@ -319,6 +323,22 @@ class SessionService:
             "speak to someone",
         ]
         return any(phrase in lowered for phrase in trigger_phrases)
+
+    def _needs_dispute_escalation(self, customer_message: str) -> bool:
+        lowered = customer_message.lower()
+        dispute_phrases = [
+            "complaint",
+            "not happy",
+            "frustrated",
+            "angry",
+            "dispute",
+            "wrong",
+            "issue with this",
+            "problem with this",
+            "this isn't right",
+            "that isn't right",
+        ]
+        return any(phrase in lowered for phrase in dispute_phrases)
 
     def _build_voicemail_message(self, session: SessionState) -> str:
         issue = session.parsed_intent.issue_type.replace("_", " ")

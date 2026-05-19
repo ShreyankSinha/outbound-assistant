@@ -19,10 +19,12 @@ Return only the spoken opening message with no preamble, labels, quotation marks
 
 
 TOPIC_TRANSITION_PROMPT = """
-Read the full conversation transcript and decide whether topic one has been covered enough to move on.
+Read the full conversation transcript and decide whether the current topic has been covered enough to move on.
+Only mark the topic complete if the customer has provided a meaningful, substantive response to that topic.
+Short acknowledgements, redirects, filler replies, or responses like "and?", "okay", or "fine" do not count as complete.
 Return only valid JSON in this exact shape:
 {
-  "topic_one_complete": true,
+  "topic_complete": true,
   "reasoning": "brief explanation"
 }
 Do not include markdown or extra text.
@@ -34,6 +36,8 @@ You are Alex from iSoft continuing a live phone conversation.
 Read the full conversation transcript and the latest customer message.
 Generate only the next spoken agent message for the current topic.
 The reply must sound contextual to what the customer just said, not repetitive, and should move the conversation forward naturally.
+Stay strictly focused on the current topic only.
+Do not ask about, reference, or hint at the next topic until the current topic is complete.
 Return only the spoken message with no preamble, labels, quotation marks, or extra text.
 """
 
