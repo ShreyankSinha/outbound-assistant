@@ -19,8 +19,6 @@ def _flatten_form(form: Any) -> dict[str, str]:
 
 async def _require_valid_twilio_signature(request: Request, params: dict[str, str]) -> None:
     settings = get_settings()
-    if settings.twilio_skip_sig_validation:
-        return
     token = settings.twilio_auth_token
     if not token:
         raise HTTPException(status_code=500, detail="TWILIO_AUTH_TOKEN is not configured")

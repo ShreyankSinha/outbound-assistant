@@ -30,7 +30,8 @@ def _session() -> SessionState:
 
 @pytest.fixture()
 def twilio_client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
-    monkeypatch.setenv("TWILIO_SKIP_SIG_VALIDATION", "true")
+    async def mock_sig(*args, **kwargs): pass
+    monkeypatch.setattr("app.api.routes_twilio_webhooks._require_valid_twilio_signature", mock_sig)
     get_settings.cache_clear()
     return TestClient(fa.app)
 
@@ -51,7 +52,8 @@ def twilio_client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
 def test_status_callback_transitions(
     twilio_client: TestClient, monkeypatch: pytest.MonkeyPatch, status: str, expected_call_state: CallState
 ) -> None:
-    monkeypatch.setenv("TWILIO_SKIP_SIG_VALIDATION", "true")
+    async def mock_sig(*args, **kwargs): pass
+    monkeypatch.setattr("app.api.routes_twilio_webhooks._require_valid_twilio_signature", mock_sig)
     get_settings.cache_clear()
     fa.registry.clear()
     fa.registry.save(_session())
@@ -62,7 +64,6 @@ def test_status_callback_transitions(
 
 
 def test_invalid_signature_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TWILIO_SKIP_SIG_VALIDATION", "false")
     monkeypatch.setenv("TWILIO_AUTH_TOKEN", "test_auth_token")
     get_settings.cache_clear()
     fa.registry.clear()
@@ -73,7 +74,8 @@ def test_invalid_signature_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_voicemail_amd_machine_end_beep_sets_no_answer(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    monkeypatch.setenv("TWILIO_SKIP_SIG_VALIDATION", "true")
+    async def mock_sig(*args, **kwargs): pass
+    monkeypatch.setattr("app.api.routes_twilio_webhooks._require_valid_twilio_signature", mock_sig)
     get_settings.cache_clear()
     fa.registry.clear()
     fa.registry.save(_session())
@@ -93,7 +95,6 @@ def test_voicemail_amd_machine_end_beep_sets_no_answer(monkeypatch: pytest.Monke
 
 
 def test_valid_signature_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TWILIO_SKIP_SIG_VALIDATION", "false")
     monkeypatch.setenv("TWILIO_AUTH_TOKEN", "mytoken")
     get_settings.cache_clear()
     fa.registry.clear()

@@ -8,7 +8,6 @@ from pydantic import BaseModel, Field
 
 from app.api.routes_twilio_webhooks import create_twilio_router
 from app.api.routes_twilio_ws import create_twilio_ws_router
-from app.api.routes_sim import create_sim_router
 from app.config import get_settings
 from app.core.exceptions import ProviderError
 from app.services.customer_directory import CustomerDirectory
@@ -94,7 +93,6 @@ _proxy = _SessionServiceProxy()
 app = FastAPI(title="Outbound Assistant", lifespan=lifespan)
 app.include_router(create_twilio_router(_proxy))  # type: ignore[arg-type]
 app.include_router(create_twilio_ws_router())
-app.include_router(create_sim_router(_proxy))  # type: ignore[arg-type]  # sim endpoints always mounted; active only when TWILIO_SIMULATION_MODE=true
 
 
 # ---------------------------------------------------------------------------

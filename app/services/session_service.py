@@ -48,10 +48,6 @@ class SessionService:
         session.twilio_voice_url_absolute = voice
         session.twilio_status_callback_url_absolute = status
         session.twilio_gather_action_url_absolute = action
-        if self.settings.twilio_simulation_mode:
-            # Derive the ngrok root by stripping /webhooks/twilio/status
-            base = status.rstrip("/").rsplit("/webhooks", 1)[0]
-            session.twilio_simulation_url_absolute = f"{base}/outbound-call"
 
     async def create_session(self, operator_instruction: str, call_target: str = "mock-customer") -> SessionState:
         parsed_intent = await self.parser.parse(operator_instruction)

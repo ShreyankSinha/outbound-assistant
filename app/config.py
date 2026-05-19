@@ -19,8 +19,6 @@ class Settings(BaseSettings):
     twilio_phone_number: str = Field(default="", alias="TWILIO_PHONE_NUMBER")
     twilio_status_callback_url: str = Field(default="", alias="TWILIO_STATUS_CALLBACK_URL")
     twilio_stream_url: str = Field(default="", alias="TWILIO_STREAM_URL")
-    twilio_skip_sig_validation: bool = Field(default=False, alias="TWILIO_SKIP_SIG_VALIDATION")
-    twilio_simulation_mode: bool = Field(default=False, alias="TWILIO_SIMULATION_MODE")
     fastapi_host: str = Field(default="0.0.0.0", alias="FASTAPI_HOST")
     fastapi_port: int = Field(default=8000, alias="FASTAPI_PORT")
     gradio_server_host: str = Field(default="127.0.0.1", alias="GRADIO_SERVER_HOST")

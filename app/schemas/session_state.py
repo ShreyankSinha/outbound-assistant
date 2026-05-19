@@ -41,4 +41,3 @@ class SessionState(BaseModel):
     voicemail_message_played: bool = False
     webhook_event_types: list[str] = Field(default_factory=list)
     gather_result: dict[str, Any] = Field(default_factory=dict)
-    twilio_simulation_url_absolute: str = ""
