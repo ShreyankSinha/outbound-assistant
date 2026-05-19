@@ -103,9 +103,7 @@ class ResponseGenerator:
     async def generate_topic_transition_message(self, intent: ParsedIntent, transcript: list[TranscriptEntry]) -> str:
         if intent.single_topic or not intent.topic_two:
             return await self.generate_closing_message(intent, transcript)
-        return (
-            f"Thanks, that helps. Before we wrap up, I'd also like to ask about {intent.topic_two.rstrip('.')}."
-        )
+        return self._fallback_topic_two_opening_question(intent.topic_two)
 
     async def generate_topic_follow_up(
         self,
@@ -125,6 +123,7 @@ class ResponseGenerator:
             f"Topic one: {intent.topic_one}\n"
             f"Topic two: {intent.topic_two or 'N/A'}\n"
             f"Latest customer message: {customer_message or 'N/A'}\n"
+            f"Current topic instruction: {self._current_topic_instruction(topic_number)}\n"
             f"Transcript:\n{self._transcript_text(transcript)}"
         )
         raw = await self.llm_client.complete(TOPIC_FOLLOW_UP_PROMPT, user_prompt, prefer_fallback=True)
@@ -219,10 +218,27 @@ class ResponseGenerator:
                 return f"Thanks, that helps. What else can you tell me about {topic.rstrip('.')}?"
             return f"Thanks. Could you tell me a little more about {topic.rstrip('.')}?"
         if customer_message:
-            return f"That makes sense. What more can you share about {topic.rstrip('.')}?"
+            return f"That makes sense. How long are you expecting {topic.rstrip('.')} to take?"
         if topic_number == 1:
             return f"Thanks. Could you tell me a little more about {topic.rstrip('.')}?"
-        return f"That makes sense. What can you share about {topic.rstrip('.')}?"
+        return f"How long are you expecting {topic.rstrip('.')} to take?"
+
+    @staticmethod
+    def _fallback_topic_two_opening_question(topic_two: str | None) -> str:
+        topic = (topic_two or "the timeline").rstrip(".")
+        return f"Thanks, that's helpful. How long are you expecting {topic} to take?"
+
+    @staticmethod
+    def _current_topic_instruction(topic_number: int) -> str:
+        if topic_number == 1:
+            return (
+                "You are currently on topic one only. Do not mention, reference, or ask about topic two until explicitly instructed. "
+                "Your only goal right now is to gather information about topic one."
+            )
+        return (
+            "You are currently on topic two only. Ask a specific time-related question and stay on timing until the customer has answered it meaningfully. "
+            "Do not return to topic one."
+        )
 
     @staticmethod
     def _fallback_transition_judgment(

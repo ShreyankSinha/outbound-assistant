@@ -99,6 +99,7 @@ async def test_two_topic_flow_and_log_creation(tmp_path: Path):
     assert session.topic_one_complete is True
     assert session.topic_two_complete is False
     assert "timeline" in session.agent_last_message.lower()
+    assert "how long" in session.agent_last_message.lower()
 
     session = await service.handle_customer_turn(session, "and?")
     assert session.outcome is None
@@ -275,3 +276,33 @@ async def test_topic_two_completion_closes_before_max_turn_escalation(tmp_path: 
     assert session.outcome.value == "resolved"
     assert session.conversation_state.value == "closing"
     assert session.escalation_reason is None
+
+
+@pytest.mark.asyncio
+async def test_topic_two_reply_stays_on_timeline_and_does_not_fall_back_to_topic_one(tmp_path: Path):
+    service = _build_service(tmp_path)
+    service.responses.judge_topic_completion = AsyncMock(
+        side_effect=[
+            {"topic_complete": False, "reasoning": "Need a bit more detail on topic one."},
+            {"topic_complete": True, "reasoning": "Topic one is complete."},
+            {"topic_complete": False, "reasoning": "The customer still needs the actual timeline question."},
+        ]
+    )
+    service.responses.judge_topic_transition = service.responses.judge_topic_completion
+
+    session = await service.create_session(
+        "Customer ID 1. Find out what the customer's plans are for the project they are working on and get a sense of the timeline."
+    )
+    session = await service.start_session(session)
+    session = await service.handle_customer_turn(session, "We're building an internal HR platform.")
+    session = await service.handle_customer_turn(session, "It will help scan, vet and hire employees.")
+
+    assert session.current_topic == 2
+    assert "how long" in session.agent_last_message.lower()
+
+    session = await service.handle_customer_turn(session, "Sure, what do you want to know?")
+
+    assert session.current_topic == 2
+    assert session.topic_two_complete is False
+    assert "timeline" in session.agent_last_message.lower() or "how long" in session.agent_last_message.lower()
+    assert "project plans" not in session.agent_last_message.lower()
