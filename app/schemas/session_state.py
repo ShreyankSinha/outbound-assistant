@@ -23,6 +23,9 @@ class SessionState(BaseModel):
     follow_up_actions: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     turn_count: int = 0
+    current_topic: int = 1
+    topic_one_complete: bool = False
+    topic_two_complete: bool | None = None
     escalation_reason: str | None = None
     resolution_notes: list[str] = Field(default_factory=list)
     customer_last_message: str = ""

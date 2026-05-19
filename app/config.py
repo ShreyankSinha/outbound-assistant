@@ -25,7 +25,12 @@ class Settings(BaseSettings):
     gradio_server_host: str = Field(default="127.0.0.1", alias="GRADIO_SERVER_HOST")
     gradio_server_port: int = Field(default=7860, alias="GRADIO_SERVER_PORT")
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", populate_by_name=True)
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        populate_by_name=True,
+        extra="ignore",
+    )
 
 
 @lru_cache(maxsize=1)

@@ -4,7 +4,7 @@ from app.config import get_settings
 from app.core.enums import CallState, ConversationState, SessionOutcome
 from app.core.exceptions import ProviderError
 from app.core.utils import new_session_id, utc_now_iso
-from app.graph.builder import build_conversation_graph
+from app.graph.nodes import agent_node
 from app.llm.instruction_parser import OperatorInstructionParser
 from app.llm.response_generator import ResponseGenerator
 from app.logging.session_persistence import SessionPersistence
@@ -58,15 +58,25 @@ class SessionService:
             parsed_intent=parsed_intent,
             call_target=call_target,
         )
+        session.topic_two_complete = None if parsed_intent.single_topic else False
+        if parsed_intent.phone_number and call_target == "mock-customer":
+            session.call_target = parsed_intent.phone_number
         return self.registry.save(session)
 
     async def start_session(self, session: SessionState) -> SessionState:
         if not session.agent_last_message:
-            session.agent_last_message = await self.responses.generate(
-                state=ConversationState.GREETING,
-                intent=session.parsed_intent,
-                transcript=session.transcript,
+            decision = await agent_node(
+                {
+                    "transcript": session.transcript,
+                    "current_topic": session.current_topic,
+                    "topic_one_complete": session.topic_one_complete,
+                    "topic_two_complete": session.topic_two_complete,
+                },
+                session.parsed_intent,
+                self.responses,
             )
+            session.agent_last_message = decision["agent_message"]
+            session.conversation_state = ConversationState(decision["conversation_state"])
         self.transcripts.add_entry(session, "agent", session.agent_last_message)
         if isinstance(self.voice.transport, TwilioTransport):
             try:
@@ -77,10 +87,6 @@ class SessionService:
         if self.voice.transport.manages_live_call_lifecycle:
             session.conversation_state = ConversationState.UNDERSTANDING
             return self.registry.save(session)
-
-        graph = build_conversation_graph(session.parsed_intent)
-        graph_state = graph.invoke({"current_state": ConversationState.GREETING.value})
-        session.conversation_state = ConversationState(graph_state["conversation_state"])
         await self.voice.play_response(session, session.agent_last_message)
         return self.registry.save(session)
 
@@ -98,39 +104,29 @@ class SessionService:
             session.escalation_reason = "max_turns_before_escalation"
             session.agent_last_message = "I'll connect this to a human follow-up because we haven't resolved it yet."
         else:
-            graph = build_conversation_graph(session.parsed_intent)
-            response_state = session.conversation_state
-            graph_state = graph.invoke(
+            previous_topic = session.current_topic
+            graph_state = await agent_node(
                 {
-                    "current_state": response_state.value,
+                    "current_state": session.conversation_state.value,
                     "latest_customer_message": customer_message,
-                }
+                    "current_topic": session.current_topic,
+                    "topic_one_complete": session.topic_one_complete,
+                    "topic_two_complete": session.topic_two_complete,
+                    "transcript": session.transcript,
+                    "turn_count": session.turn_count,
+                },
+                session.parsed_intent,
+                self.responses,
             )
             session.conversation_state = ConversationState(graph_state["conversation_state"])
             session.escalation_reason = graph_state.get("escalation_reason")
-            resolution_note = graph_state.get("resolution_note")
-            if resolution_note:
-                session.resolution_notes.append(resolution_note)
-            if session.conversation_state == ConversationState.CONFIRMING:
-                response_state = ConversationState.CONFIRMING
-                graph_state = graph.invoke(
-                    {
-                        "current_state": ConversationState.CONFIRMING.value,
-                        "latest_customer_message": customer_message,
-                        "resolution_note": resolution_note or customer_message,
-                    }
-                )
-                session.conversation_state = ConversationState(graph_state["conversation_state"])
-            if session.conversation_state in {ConversationState.CLOSING, ConversationState.ESCALATING, ConversationState.VOICEMAIL}:
-                session.agent_last_message = graph_state.get("latest_agent_message", "")
-            else:
-                session.agent_last_message = await self.responses.generate(
-                    state=response_state,
-                    intent=session.parsed_intent,
-                    transcript=session.transcript,
-                    customer_message=customer_message,
-                    escalation_reason=session.escalation_reason,
-                )
+            session.current_topic = graph_state.get("current_topic", session.current_topic)
+            session.topic_one_complete = graph_state.get("topic_one_complete", session.topic_one_complete)
+            session.topic_two_complete = graph_state.get("topic_two_complete", session.topic_two_complete)
+            self._append_resolution_note(session, graph_state.get("resolution_note"))
+            if previous_topic == 1 and session.current_topic == 2:
+                self._append_resolution_note(session, f"topic_transition_turn:{session.turn_count}")
+            session.agent_last_message = graph_state.get("agent_message") or graph_state.get("latest_agent_message", "")
 
         self.transcripts.add_entry(session, "agent", session.agent_last_message)
         return session
@@ -156,7 +152,7 @@ class SessionService:
                 session.outcome = SessionOutcome.ESCALATED
                 session.follow_up_actions = ["Human agent follow-up required."]
 
-        session.summary = self._build_summary(session)
+        session.summary = await self.responses.generate_summary(session.parsed_intent, session.transcript)
         session.timestamp_end = utc_now_iso()
         if end_call:
             await self.voice.end_call(session, session.outcome.value)
@@ -312,15 +308,6 @@ class SessionService:
 
         return self.registry.save(session)
 
-    def _build_summary(self, session: SessionState) -> str:
-        if session.outcome == SessionOutcome.RESOLVED:
-            note = session.resolution_notes[-1] if session.resolution_notes else "a resolution was reached"
-            return f"The call reached a resolution. The customer indicated: {note}. The session closed without escalation."
-        if session.outcome == SessionOutcome.NO_ANSWER:
-            return "The outbound attempt did not reach a live conversation. A voicemail or no-answer path was recorded and follow-up is required."
-        reason = session.escalation_reason or "the issue needs human review"
-        return f"The call did not fully resolve. The conversation was escalated because {reason}. A human follow-up is required."
-
     def _needs_immediate_escalation(self, customer_message: str) -> bool:
         lowered = customer_message.lower()
         trigger_phrases = [
@@ -339,3 +326,8 @@ class SessionService:
             f"Hello, this is a follow-up call regarding your {issue}. "
             "Please call us back at your earliest convenience so we can help resolve it. Thank you."
         )
+
+    @staticmethod
+    def _append_resolution_note(session: SessionState, note: str | None) -> None:
+        if note and note not in session.resolution_notes:
+            session.resolution_notes.append(note)

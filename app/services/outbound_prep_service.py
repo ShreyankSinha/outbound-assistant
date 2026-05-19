@@ -72,9 +72,10 @@ class OutboundPrepService:
 
     @staticmethod
     def _build_personalized_message(parsed_intent: ParsedIntent, customer: CustomerRecord) -> str:
-        amount = f" of {parsed_intent.amount}" if parsed_intent.amount else ""
-        reason = parsed_intent.issue_type.replace("_", " ")
+        secondary = ""
+        if not parsed_intent.single_topic and parsed_intent.topic_two:
+            secondary = f" and {parsed_intent.topic_two.rstrip('.')}"
         return (
-            f"Hello {customer.customer_name}, this is a follow-up call regarding your {reason}{amount}. "
-            f"We're calling to {parsed_intent.desired_resolution}. Please let us know how you'd like to proceed."
+            f"Hi {customer.customer_name}, this is Alex calling on behalf of iSoft. "
+            f"I was hoping to ask you about {parsed_intent.topic_one.rstrip('.')}{secondary} if you have a moment."
         )
