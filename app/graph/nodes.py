@@ -34,10 +34,33 @@ async def agent_node(
             "tools_to_call": [],
         }
 
+    farewell = await generator.detect_farewell(transcript)
+    if bool(farewell.get("should_end_call")):
+        closing = await generator.generate_closing_message(intent, transcript)
+        return {
+            "next_state": ConversationState.CLOSING.value,
+            "conversation_state": ConversationState.CLOSING.value,
+            "agent_message": closing,
+            "latest_agent_message": closing,
+            "current_topic": current_topic,
+            "topic_one_complete": topic_one_complete,
+            "topic_two_complete": topic_two_complete,
+            "reasoning": str(farewell.get("reasoning") or "The customer is ending the call."),
+            "resolution_note": warning_note or "",
+            "tools_to_call": [],
+        }
+
     if current_topic == 1 and not topic_one_complete:
+        customer_turns = _customer_turns(transcript)
+        latest_customer_message = customer_turns[-1].content if customer_turns else ""
+        meaningful_customer_turns = [entry for entry in customer_turns if _is_meaningful_customer_response(entry.content)]
         transition = await generator.judge_topic_transition(intent, transcript)
         reasoning = str(transition.get("reasoning") or "Continuing topic one.")
-        if bool(transition.get("topic_complete", transition.get("topic_one_complete"))):
+        can_complete_topic_one = (
+            _is_meaningful_customer_response(latest_customer_message)
+            and (intent.single_topic or len(meaningful_customer_turns) >= 2)
+        )
+        if can_complete_topic_one and bool(transition.get("topic_complete", transition.get("topic_one_complete"))):
             topic_one_complete = True
             if intent.single_topic or not intent.topic_two:
                 closing = await generator.generate_closing_message(intent, transcript)
@@ -83,9 +106,13 @@ async def agent_node(
         }
 
     if current_topic == 2 and topic_two_complete is False:
+        latest_customer_message = ""
+        customer_turns = _customer_turns(transcript)
+        if customer_turns:
+            latest_customer_message = customer_turns[-1].content
         transition = await generator.judge_topic_completion(intent, transcript, topic_number=2)
         reasoning = str(transition.get("reasoning") or "Continuing topic two.")
-        if bool(transition.get("topic_complete")):
+        if _is_meaningful_customer_response(latest_customer_message) and bool(transition.get("topic_complete")):
             closing = await generator.generate_closing_message(intent, transcript)
             return {
                 "next_state": ConversationState.CLOSING.value,
@@ -188,3 +215,31 @@ def _transcript_warning(transcript: list[object]) -> str | None:
 
 def _combine_notes(*notes: str | None) -> str:
     return " ".join(note for note in notes if note).strip()
+
+
+def _customer_turns(transcript: list[object]) -> list[object]:
+    return [entry for entry in transcript if getattr(entry, "role", "").lower() == "customer"]
+
+
+def _is_meaningful_customer_response(message: str) -> bool:
+    lowered = message.lower().strip()
+    non_answers = {
+        "",
+        "yeah",
+        "yes",
+        "yep",
+        "okay",
+        "ok",
+        "fine",
+        "sure",
+        "and",
+        "and?",
+        "bye",
+        "goodbye",
+        "now is fine",
+        "yeah now is fine",
+        "yes now is fine",
+        "that's fine",
+        "thats fine",
+    }
+    return lowered not in non_answers and len(lowered.split()) >= 4

@@ -179,6 +179,36 @@ async def test_topic_follow_up_uses_full_up_to_date_transcript(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_topic_one_guard_blocks_early_jump_to_topic_two(tmp_path: Path):
+    service = _build_service(tmp_path)
+    service.responses.judge_topic_completion = AsyncMock(
+        side_effect=[
+            {"topic_complete": True, "reasoning": "The model thinks topic one is complete too early."},
+            {"topic_complete": True, "reasoning": "The model still thinks topic one is complete too early."},
+        ]
+    )
+    service.responses.judge_topic_transition = service.responses.judge_topic_completion
+
+    session = await service.create_session(
+        "Customer ID 1. Find out what the customer's plans are for the project they are working on and get a sense of the timeline."
+    )
+    session = await service.start_session(session)
+
+    session = await service.handle_customer_turn(session, "yeah now is fine")
+    assert session.current_topic == 1
+    assert session.topic_one_complete is False
+    assert "timeline" not in session.agent_last_message.lower()
+
+    session = await service.handle_customer_turn(
+        session,
+        "We are building a new internal HR platform, early stages but core features are scoped.",
+    )
+    assert session.current_topic == 1
+    assert session.topic_one_complete is False
+    assert "timeline" not in session.agent_last_message.lower()
+
+
+@pytest.mark.asyncio
 async def test_closing_message_strips_meta_text_from_llm_output(tmp_path: Path):
     service = _build_service(tmp_path)
     session = await service.create_session(
@@ -198,10 +228,33 @@ async def test_closing_message_strips_meta_text_from_llm_output(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_farewell_ends_call_and_prevents_further_responses(tmp_path: Path):
+    service = _build_service(tmp_path)
+    session = await service.create_session(
+        "Customer ID 1. Find out what the customer's plans are for the project they are working on and get a sense of the timeline."
+    )
+    session = await service.start_session(session)
+
+    session = await service.handle_customer_turn(session, "We're building a platform for internal operations.")
+    session = await service.handle_customer_turn(session, "Bye")
+
+    assert session.outcome is not None
+    assert session.outcome.value == "resolved"
+    assert session.timestamp_end is not None
+    closing_message = session.agent_last_message
+
+    updated = await service.handle_customer_turn(session, "One more thing")
+    assert updated.agent_last_message == closing_message
+    assert updated.timestamp_end == session.timestamp_end
+    assert updated.turn_count == session.turn_count
+
+
+@pytest.mark.asyncio
 async def test_topic_two_completion_closes_before_max_turn_escalation(tmp_path: Path):
     service = _build_service(tmp_path)
     service.responses.judge_topic_completion = AsyncMock(
         side_effect=[
+            {"topic_complete": False, "reasoning": "Need one more useful detail on topic one."},
             {"topic_complete": True, "reasoning": "Topic one is complete."},
             {"topic_complete": True, "reasoning": "Topic two is complete."},
         ]
@@ -213,6 +266,7 @@ async def test_topic_two_completion_closes_before_max_turn_escalation(tmp_path: 
     )
     session = await service.start_session(session)
     session = await service.handle_customer_turn(session, "We're building the platform in phases.")
+    session = await service.handle_customer_turn(session, "The project is for internal workflow automation across the team.")
     session.turn_count = service.settings.max_turns_before_escalation - 1
 
     session = await service.handle_customer_turn(session, "The team is targeting six months and an end-of-Q3 launch.")

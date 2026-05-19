@@ -4,6 +4,7 @@ from app.core.enums import ConversationState
 from app.llm.groq_client import GroqLLMClient
 from app.llm.prompts import (
     CLOSING_PROMPT,
+    FAREWELL_DETECTION_PROMPT,
     OPENING_MESSAGE_PROMPT,
     SUMMARY_GENERATION_PROMPT,
     TOPIC_FOLLOW_UP_PROMPT,
@@ -50,6 +51,28 @@ class ResponseGenerator:
 
     async def judge_topic_transition(self, intent: ParsedIntent, transcript: list[TranscriptEntry]) -> dict[str, object]:
         return await self.judge_topic_completion(intent, transcript, topic_number=1)
+
+    async def detect_farewell(self, transcript: list[TranscriptEntry]) -> dict[str, object]:
+        fallback = self._fallback_farewell_detection(transcript)
+        if not self.llm_client.client:
+            return fallback
+        latest_customer_message = ""
+        for entry in reversed(transcript):
+            if entry.role.lower() == "customer":
+                latest_customer_message = entry.content
+                break
+        user_prompt = (
+            f"Latest customer message: {latest_customer_message or 'N/A'}\n"
+            f"Transcript:\n{self._transcript_text(transcript)}"
+        )
+        try:
+            result = await self.llm_client.complete_json(FAREWELL_DETECTION_PROMPT, user_prompt)
+        except Exception:
+            result = fallback
+        return {
+            "should_end_call": bool(result.get("should_end_call")),
+            "reasoning": str(result.get("reasoning") or "No clear farewell detected."),
+        }
 
     async def judge_topic_completion(
         self,
@@ -234,6 +257,31 @@ class ResponseGenerator:
             "The customer has not answered topic two in a meaningful way yet."
         )
         return {"topic_complete": complete, "reasoning": reasoning}
+
+    @staticmethod
+    def _fallback_farewell_detection(transcript: list[TranscriptEntry]) -> dict[str, object]:
+        latest_customer_message = ""
+        for entry in reversed(transcript):
+            if entry.role.lower() == "customer":
+                latest_customer_message = entry.content.lower().strip()
+                break
+        farewell_phrases = {
+            "bye",
+            "goodbye",
+            "thanks bye",
+            "that's all",
+            "thats all",
+            "no that's everything",
+            "no thats everything",
+            "we're done",
+            "were done",
+            "talk later",
+            "speak soon",
+            "catch you later",
+        }
+        should_end_call = latest_customer_message in farewell_phrases
+        reasoning = "The customer is clearly ending the call." if should_end_call else "No clear farewell detected."
+        return {"should_end_call": should_end_call, "reasoning": reasoning}
 
     @staticmethod
     def _fallback_summary(intent: ParsedIntent, transcript: list[TranscriptEntry]) -> str:

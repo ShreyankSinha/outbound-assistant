@@ -136,6 +136,8 @@ class SessionService:
         return session
 
     async def handle_customer_turn(self, session: SessionState, customer_message: str) -> SessionState:
+        if session.timestamp_end:
+            return self.registry.save(session)
         session = await self.apply_customer_speech(session, customer_message)
         await self.voice.play_response(session, session.agent_last_message)
         if session.conversation_state in {ConversationState.CLOSING, ConversationState.ESCALATING, ConversationState.VOICEMAIL}:
