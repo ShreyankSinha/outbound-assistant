@@ -79,8 +79,12 @@ class SessionService:
             return self.registry.save(session)
 
         graph = build_conversation_graph(session.parsed_intent)
-        graph_state = graph.invoke({"current_state": ConversationState.GREETING.value})
+        graph_state = await graph.ainvoke({
+            "current_state": ConversationState.GREETING.value,
+            "transcript": [entry.model_dump() for entry in session.transcript],
+        })
         session.conversation_state = ConversationState(graph_state["conversation_state"])
+        session.agent_last_message = graph_state.get("latest_agent_message", session.agent_last_message)
         await self.voice.play_response(session, session.agent_last_message)
         return self.registry.save(session)
 
@@ -100,10 +104,11 @@ class SessionService:
         else:
             graph = build_conversation_graph(session.parsed_intent)
             response_state = session.conversation_state
-            graph_state = graph.invoke(
+            graph_state = await graph.ainvoke(
                 {
                     "current_state": response_state.value,
                     "latest_customer_message": customer_message,
+                    "transcript": [entry.model_dump() for entry in session.transcript],
                 }
             )
             session.conversation_state = ConversationState(graph_state["conversation_state"])
@@ -111,26 +116,12 @@ class SessionService:
             resolution_note = graph_state.get("resolution_note")
             if resolution_note:
                 session.resolution_notes.append(resolution_note)
-            if session.conversation_state == ConversationState.CONFIRMING:
-                response_state = ConversationState.CONFIRMING
-                graph_state = graph.invoke(
-                    {
-                        "current_state": ConversationState.CONFIRMING.value,
-                        "latest_customer_message": customer_message,
-                        "resolution_note": resolution_note or customer_message,
-                    }
-                )
-                session.conversation_state = ConversationState(graph_state["conversation_state"])
-            if session.conversation_state in {ConversationState.CLOSING, ConversationState.ESCALATING, ConversationState.VOICEMAIL}:
-                session.agent_last_message = graph_state.get("latest_agent_message", "")
-            else:
-                session.agent_last_message = await self.responses.generate(
-                    state=response_state,
-                    intent=session.parsed_intent,
-                    transcript=session.transcript,
-                    customer_message=customer_message,
-                    escalation_reason=session.escalation_reason,
-                )
+            
+            tools_to_call = graph_state.get("tools_to_call")
+            if tools_to_call:
+                session.resolution_notes.append(f"Tools called: {tools_to_call}")
+
+            session.agent_last_message = graph_state.get("latest_agent_message", "")
 
         self.transcripts.add_entry(session, "agent", session.agent_last_message)
         return session

@@ -11,6 +11,8 @@ class GraphState(TypedDict, total=False):
     escalation_reason: str
     outcome: str
     resolution_note: str
+    transcript: list[dict]
+    tools_to_call: list[dict]
 
 
 FINAL_STATES = {

@@ -23,12 +23,13 @@ async def test_happy_path_resolves_and_persists_log(tmp_path: Path):
     session = await service.start_session(session)
     session = await service.handle_customer_turn(session, "Okay, what's this about?")
     session = await service.handle_customer_turn(session, "Yes, I can pay tomorrow")
+    session = await service.handle_customer_turn(session, "Thanks, bye.")
 
     assert session.outcome is not None
     assert session.outcome.value == "resolved"
     assert session.call_state.value == "ended"
     assert session.summary
-    assert "Yes, I can pay tomorrow" in session.summary
+    assert "log_payment_commitment" in session.summary
 
     log_path = tmp_path / f"{session.session_id}.json"
     assert log_path.exists()
@@ -81,8 +82,11 @@ async def test_twilio_gather_resolves_without_live_call(tmp_path: Path):
     await service.handle_twilio_gather(
         {"CallSid": "call-control-123", "SpeechResult": "Okay, what's this about?"}
     )
-    _, twiml = await service.handle_twilio_gather(
+    await service.handle_twilio_gather(
         {"CallSid": "call-control-123", "SpeechResult": "Yes, I can pay tomorrow."}
+    )
+    _, twiml = await service.handle_twilio_gather(
+        {"CallSid": "call-control-123", "SpeechResult": "Thanks, bye."}
     )
     updated = service.registry.get(session.session_id)
     assert updated is not None
