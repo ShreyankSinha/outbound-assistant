@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 
 from twilio.base.exceptions import TwilioRestException
 
+from app.config import get_settings
 from app.core.enums import CallState
 from app.core.exceptions import ProviderError
 from app.orchestration.call_lifecycle_manager import CallLifecycleManager
@@ -29,6 +30,11 @@ class TwilioTransport(BaseTransport):
         self.lifecycle.transition(session, CallState.RINGING)
         if not session.call_target.startswith("+"):
             raise ProviderError("Twilio outbound calls require an E.164 destination number.")
+
+        print(
+            f"[TwilioTransport.start_session] call_target={session.call_target!r}"
+        )
+
         try:
             result = self.outbound.create_outbound_call(
                 to_number=session.call_target,
@@ -60,7 +66,7 @@ class TwilioTransport(BaseTransport):
                 self.control.hangup(session.call_control_id)
             except TwilioRestException as exc:
                 session.errors.append(f"twilio_hangup_failed:{exc.status}:{exc.msg}")
-                logger.warning("twilio_hangup_failed", extra={"session_id": session.session_id, "msg": str(exc)})
+                logger.warning("twilio_hangup_failed", extra={"session_id": session.session_id, "error_msg": str(exc)})
         if session.call_state != CallState.ENDED:
             self.lifecycle.transition(session, CallState.ENDED)
         return session

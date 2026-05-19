@@ -30,9 +30,9 @@ class TwilioOutboundCall:
             raise ValueError("TWILIO_PHONE_NUMBER is not configured.")
 
         client = Client(self.settings.twilio_account_sid, self.settings.twilio_auth_token)
+
         sep = "&" if "?" in voice_url_absolute else "?"
         url = f"{voice_url_absolute}{sep}session_id={session_id}"
-
         try:
             call = client.calls.create(
                 to=to_number,
@@ -50,7 +50,8 @@ class TwilioOutboundCall:
         except TwilioRestException as exc:
             logger.warning(
                 "twilio_calls_create_failed",
-                extra={"status": exc.status, "msg": str(exc), "session_id": session_id},
+                extra={"status": exc.status, "error_msg": str(exc), "session_id": session_id},
             )
             raise
+
         return {"sid": call.sid, "status": call.status}
