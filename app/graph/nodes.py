@@ -41,17 +41,17 @@ def negotiating_node(state: GraphState, intent: ParsedIntent) -> GraphState:
             "conversation_state": ConversationState.VOICEMAIL.value,
             "latest_agent_message": "Hello, please call us back when convenient regarding your outstanding matter. Thank you.",
         }
-    if any(word in message for word in ["yes", "pay", "tomorrow", "today", "arrange", "callback"]):
-        return {
-            "conversation_state": ConversationState.CONFIRMING.value,
-            "latest_agent_message": "Thank you. Let me confirm the arrangement we've discussed.",
-            "resolution_note": state.get("latest_customer_message", ""),
-        }
-    if any(word in message for word in ["dispute", "wrong", "don't owe", "not mine"]):
+    if any(word in message for word in ["dispute", "wrong", "don't owe", "not mine", "refuse", "won't", "will not"]):
         return {
             "conversation_state": ConversationState.ESCALATING.value,
             "latest_agent_message": "Thanks for explaining that. I'll escalate this for review by a human agent.",
             "escalation_reason": "customer_disputed_issue",
+        }
+    if any(word in message for word in ["yes", "pay", "tomorrow", "today", "arrange", "callback", "transfer", "done", "will do", "sure", "ok", "okay", "agreed", "settle", "paid", "bye", "goodbye"]):
+        return {
+            "conversation_state": ConversationState.CONFIRMING.value,
+            "latest_agent_message": "Thank you. Let me confirm the arrangement we've discussed.",
+            "resolution_note": state.get("latest_customer_message", ""),
         }
     return {
         "conversation_state": ConversationState.NEGOTIATING.value,
