@@ -57,3 +57,5 @@ def build_demo():
             outputs=[transcript, last_agent_message, summary, outcome],
         )
     return demo
+demo = build_demo()
+demo.launch(server_name="0.0.0.0")
