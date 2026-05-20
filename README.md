@@ -1,3 +1,14 @@
+---
+title: Outbound Assistant
+emoji: 📞
+colorFrom: blue
+colorTo: indigo
+sdk: gradio
+sdk_version: "6.14.0"
+app_file: app.py
+pinned: false
+---
+
 # Outbound Assistant
 
 A telephony-first proof of concept for an AI-powered outbound caller. This vertical slice demonstrates a working end-to-end pipeline including instruction parsing, call initiation, graph-driven conversation, escalation handling, and full transcript persistence.
@@ -31,14 +42,3 @@ A telephony-first proof of concept for an AI-powered outbound caller. This verti
 - `TwilioTransport` uses Programmable Voice (`<Say>` + `<Gather input="speech">`) and status webhooks for live calls.
 - Gradio serves as a debug transport only — it is not the core runtime abstraction.
 - The conversation engine uses LangGraph with separate call and conversation state objects.
-
----
-title: Outbound Assistant
-emoji: 📞
-colorFrom: blue
-colorTo: indigo
-sdk: gradio
-sdk_version: "6.14.0"
-app_file: app.py
-pinned: false
----
