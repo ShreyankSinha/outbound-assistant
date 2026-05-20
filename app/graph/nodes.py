@@ -156,9 +156,10 @@ async def agent_node(
     }
 
 def greeting_node(state: GraphState, intent: ParsedIntent) -> GraphState:
+    from app.llm.response_generator import ResponseGenerator
     return {
         "conversation_state": ConversationState.UNDERSTANDING.value,
-        "latest_agent_message": f"Hi, this is Alex from iSoft calling about {intent.topic_one.rstrip('.')}.",
+        "latest_agent_message": ResponseGenerator._fallback_opening(intent),
     }
 
 

@@ -42,8 +42,12 @@ class ResponseGenerator:
         if not self.llm_client.client:
             return fallback
         user_prompt = (
+            f"Operator instruction: {intent.raw_instruction or 'N/A'}\n"
+            f"Call purpose / issue type: {intent.issue_type or 'N/A'}\n"
             f"Topic one: {intent.topic_one}\n"
             f"Topic two: {intent.topic_two or 'N/A'}\n"
+            f"Desired resolution: {intent.desired_resolution or 'N/A'}\n"
+            f"Amount (if any): {getattr(intent, 'amount', None) or 'N/A'}\n"
             f"Single topic: {intent.single_topic}"
         )
         raw = await self.llm_client.complete(OPENING_MESSAGE_PROMPT, user_prompt, prefer_fallback=True)
@@ -201,14 +205,15 @@ class ResponseGenerator:
 
     @staticmethod
     def _fallback_opening(intent: ParsedIntent) -> str:
+        context = (intent.desired_resolution or intent.issue_type or intent.topic_one).rstrip('.').replace('_', ' ')
         if intent.single_topic or not intent.topic_two:
             return (
                 f"Hi, this is Alex calling on behalf of iSoft. I was hoping to ask you a few questions about "
-                f"{intent.topic_one.rstrip('.')} if you have a moment."
+                f"{context} if you have a moment."
             )
         return (
             f"Hi, this is Alex calling on behalf of iSoft. I was hoping to ask you a few questions about "
-            f"{intent.topic_one.rstrip('.')} and get a sense of {intent.topic_two.rstrip('.').lower()} if you have a moment."
+            f"{context} and get a sense of {intent.topic_two.rstrip('.').lower()} if you have a moment."
         )
 
     @staticmethod
