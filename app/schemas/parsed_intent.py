@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, field_validator, Field, model_validator
 
 
 class ParsedIntent(BaseModel):
@@ -13,6 +13,14 @@ class ParsedIntent(BaseModel):
     single_topic: bool = True
     issue_type: str = "general_follow_up"
     amount: str | None = None
+    
+    @field_validator("amount", mode="before")
+    @classmethod
+    def coerce_amount_to_str(cls, v):
+        if v is None:
+            return None
+        return str(v)
+        
     due_date: str | None = None
     reference_number: str | None = None
     desired_resolution: str = "clarify situation and seek resolution"
