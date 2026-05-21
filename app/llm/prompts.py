@@ -105,7 +105,25 @@ SCHEMA DEFINITION:
 
 
 SUMMARY_GENERATION_PROMPT = """
-Write a plain English summary of what was learned on the call for each discussion topic.
-Use natural prose only.
-Do not use bullet points, markdown, or sub-headers inside the summary text itself.
+Write a plain English summary of what was learned on the call.
+The summary must be 3–5 sentences covering only the key outcomes and any relevant context needed to understand them.
+
+REQUIRED CONTENT:
+- What the call was about
+- What happened or what was resolved, including any relevant context such as blockers encountered and how they were worked around
+- What the customer committed to
+- Any follow-up action required, or confirmation that none is needed
+
+CONSTRAINTS:
+- Do not describe what questions were asked.
+- Do not narrate the conversation turn by turn.
+- Do not use bullet points — prose only.
+- Do not pad with filler phrases about the call being concluded politely.
+- Maximum 5 sentences.
+
+GOOD EXAMPLE:
+Called to chase the outstanding $320 invoice. The customer attempted to pay via the website but their card was declined. An alternative arrangement was agreed — the customer will complete a bank transfer today. No further action required.
+
+BAD EXAMPLE:
+The call began with Alex introducing the purpose of the call regarding the outstanding invoice. The customer explained that they had attempted to pay via the website but experienced issues with their card. Alex then explored alternative payment options and the customer agreed to a bank transfer. The conversation concluded with Alex confirming the arrangement and closing the call politely.
 """

@@ -92,7 +92,19 @@ class ResponseGenerator:
             f"Issue type: {intent.issue_type or 'N/A'}\n"
             f"Transcript:\n{self._transcript_text(transcript)}"
         )
-        return await self.llm_client.complete(SUMMARY_GENERATION_PROMPT, user_prompt, prefer_fallback=True)
+        try:
+            response = await self.llm_client.client.chat.completions.create(
+                model=self.llm_client.settings.groq_model_fallback,
+                messages=[
+                    {"role": "system", "content": SUMMARY_GENERATION_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.2,
+                max_tokens=200,
+            )
+            return response.choices[0].message.content or ""
+        except Exception:
+            return fallback
 
     @staticmethod
     def _transcript_text(transcript: list[TranscriptEntry]) -> str:
