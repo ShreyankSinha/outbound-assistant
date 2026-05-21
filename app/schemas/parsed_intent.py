@@ -7,7 +7,8 @@ class ParsedIntent(BaseModel):
     customer_id: int | None = None
     customer_name: str | None = None
     phone_number: str | None = None
-    topic_one: str = ""
+    call_objective: str = ""
+    topic_one: str | None = None
     topic_two: str | None = None
     single_topic: bool = True
     issue_type: str = "general_follow_up"
@@ -20,14 +21,6 @@ class ParsedIntent(BaseModel):
 
     @model_validator(mode="after")
     def _normalize_topics(self) -> "ParsedIntent":
-        if not self.topic_one:
-            fallback_topic = self.desired_resolution or self.issue_type.replace("_", " ")
-            self.topic_one = fallback_topic.strip()
-        if self.topic_two:
-            self.topic_two = self.topic_two.strip()
-        if self.topic_two:
-            self.single_topic = False
-        else:
-            self.topic_two = None
-            self.single_topic = True
+        if not self.call_objective:
+            self.call_objective = self.raw_instruction or self.desired_resolution or self.issue_type.replace("_", " ")
         return self

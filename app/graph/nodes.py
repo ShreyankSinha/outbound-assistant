@@ -1,24 +1,24 @@
 from __future__ import annotations
 
-from app.core.enums import ConversationState
+from app.core.enums import ConversationState, SessionOutcome
 from app.graph.state import GraphState
 from app.llm.response_generator import ResponseGenerator
 from app.schemas.parsed_intent import ParsedIntent
+from app.schemas.session_state import SessionState
 
 
 async def agent_node(
     state: GraphState,
     intent: ParsedIntent,
     responder: ResponseGenerator | None = None,
+    session: SessionState | None = None,
 ) -> GraphState:
     generator = responder or ResponseGenerator()
     transcript = state.get("transcript", [])
-    current_topic = state.get("current_topic", 1)
-    topic_one_complete = state.get("topic_one_complete", False)
-    topic_two_complete = state.get("topic_two_complete", None if intent.single_topic else False)
     customer_message = (state.get("latest_customer_message") or "").strip()
     warning_note = _transcript_warning(transcript)
 
+    # ── Opening: no customer message yet ──────────────────────────────────────
     if not customer_message:
         opening = await generator.generate_opening_message(intent)
         return {
@@ -26,137 +26,89 @@ async def agent_node(
             "conversation_state": ConversationState.UNDERSTANDING.value,
             "agent_message": opening,
             "latest_agent_message": opening,
-            "current_topic": 1,
-            "topic_one_complete": False,
-            "topic_two_complete": None if intent.single_topic else False,
-            "reasoning": "Opening the call and introducing the first topic.",
+            "next_action": "gather_information",
+            "objective_met": False,
+            "reasoning": "Opening the call.",
             "resolution_note": warning_note or "",
             "tools_to_call": [],
         }
 
-    farewell = await generator.detect_farewell(transcript)
-    if bool(farewell.get("should_end_call")):
-        closing = await generator.generate_closing_message(intent, transcript)
-        return {
-            "next_state": ConversationState.CLOSING.value,
-            "conversation_state": ConversationState.CLOSING.value,
-            "agent_message": closing,
-            "latest_agent_message": closing,
-            "current_topic": current_topic,
-            "topic_one_complete": topic_one_complete,
-            "topic_two_complete": topic_two_complete,
-            "reasoning": str(farewell.get("reasoning") or "The customer is ending the call."),
-            "resolution_note": warning_note or "",
-            "tools_to_call": [],
-        }
+    # ── Call already ended: no-op ─────────────────────────────────────────────
+    call_ended = state.get("conversation_state") in (
+        ConversationState.CLOSING.value,
+        ConversationState.ESCALATING.value,
+        ConversationState.VOICEMAIL.value,
+    )
+    if call_ended:
+        return {}
 
-    if current_topic == 1 and not topic_one_complete:
-        customer_turns = _customer_turns(transcript)
-        latest_customer_message = customer_turns[-1].content if customer_turns else ""
-        meaningful_customer_turns = [entry for entry in customer_turns if _is_meaningful_customer_response(entry.content)]
-        transition = await generator.judge_topic_transition(intent, transcript)
-        reasoning = str(transition.get("reasoning") or "Continuing topic one.")
-        can_complete_topic_one = (
-            _is_meaningful_customer_response(latest_customer_message)
-            and (intent.single_topic or len(meaningful_customer_turns) >= 2)
+    # ── Single planning call ──────────────────────────────────────────────────
+    call_objective = (
+        intent.call_objective
+        or (session.call_objective if session else "")
+        or intent.raw_instruction
+        or "Complete the call."
+    )
+
+    # Build a minimal SessionState snapshot for plan_turn context if not provided
+    if session is None:
+        from app.schemas.session_state import SessionState as _SS
+        session = _SS(
+            session_id="inline",
+            timestamp_start="",
+            operator_instruction=intent.raw_instruction or "",
+            parsed_intent=intent,
+            call_objective=call_objective,
+            customer_commitment_status=state.get("customer_commitment_status", "none"),
+            active_blocker_type=state.get("active_blocker_type"),
         )
-        if can_complete_topic_one and bool(transition.get("topic_complete", transition.get("topic_one_complete"))):
-            topic_one_complete = True
-            if intent.single_topic or not intent.topic_two:
-                closing = await generator.generate_closing_message(intent, transcript)
-                return {
-                    "next_state": ConversationState.CLOSING.value,
-                    "conversation_state": ConversationState.CLOSING.value,
-                    "agent_message": closing,
-                    "latest_agent_message": closing,
-                    "current_topic": 1,
-                    "topic_one_complete": True,
-                    "topic_two_complete": None,
-                    "reasoning": reasoning,
-                    "resolution_note": _combine_notes(reasoning, warning_note),
-                    "tools_to_call": [],
-                }
 
-            bridge = await generator.generate_topic_transition_message(intent, transcript)
-            return {
-                "next_state": "topic_two",
-                "conversation_state": ConversationState.NEGOTIATING.value,
-                "agent_message": bridge,
-                "latest_agent_message": bridge,
-                "current_topic": 2,
-                "topic_one_complete": True,
-                "topic_two_complete": False,
-                "reasoning": reasoning,
-                "resolution_note": _combine_notes(reasoning, warning_note),
-                "tools_to_call": [],
-            }
+    plan = await generator.plan_turn(call_objective, transcript, session)
+    plan_dict = plan.model_dump()
 
-        follow_up = await generator.generate_topic_follow_up(intent, transcript, 1, customer_message)
-        return {
-            "next_state": "topic_one",
-            "conversation_state": ConversationState.UNDERSTANDING.value,
-            "agent_message": follow_up,
-            "latest_agent_message": follow_up,
-            "current_topic": 1,
-            "topic_one_complete": False,
-            "topic_two_complete": topic_two_complete,
-            "reasoning": reasoning,
-            "resolution_note": warning_note or "",
-            "tools_to_call": [],
-        }
-
-    if current_topic == 2 and topic_two_complete is False:
-        latest_customer_message = ""
-        customer_turns = _customer_turns(transcript)
-        if customer_turns:
-            latest_customer_message = customer_turns[-1].content
-        transition = await generator.judge_topic_completion(intent, transcript, topic_number=2)
-        reasoning = str(transition.get("reasoning") or "Continuing topic two.")
-        if _is_meaningful_customer_response(latest_customer_message) and bool(transition.get("topic_complete")):
-            closing = await generator.generate_closing_message(intent, transcript)
-            return {
-                "next_state": ConversationState.CLOSING.value,
-                "conversation_state": ConversationState.CLOSING.value,
-                "agent_message": closing,
-                "latest_agent_message": closing,
-                "current_topic": 2,
-                "topic_one_complete": True,
-                "topic_two_complete": True,
-                "reasoning": reasoning,
-                "resolution_note": warning_note or "",
-                "tools_to_call": [],
-            }
-
-        follow_up = await generator.generate_topic_follow_up(intent, transcript, 2, customer_message)
-        return {
-            "next_state": "topic_two",
-            "conversation_state": ConversationState.NEGOTIATING.value,
-            "agent_message": follow_up,
-            "latest_agent_message": follow_up,
-            "current_topic": 2,
-            "topic_one_complete": True,
-            "topic_two_complete": False,
-            "reasoning": reasoning,
-            "resolution_note": warning_note or "",
-            "tools_to_call": [],
-        }
-
-    closing = await generator.generate_closing_message(intent, transcript)
-    return {
-        "next_state": ConversationState.CLOSING.value,
-        "conversation_state": ConversationState.CLOSING.value,
-        "agent_message": closing,
-        "latest_agent_message": closing,
-        "current_topic": current_topic,
-        "topic_one_complete": topic_one_complete,
-        "topic_two_complete": topic_two_complete,
-        "reasoning": "The conversation has reached a natural close.",
+    # ── Map TurnPlan → GraphState ─────────────────────────────────────────────
+    updates: GraphState = {
+        "agent_message": plan.agent_response,
+        "latest_agent_message": plan.agent_response,
+        "next_action": plan.next_action,
+        "objective_met": plan.objective_met,
+        "customer_intent": plan.customer_intent,
+        "reasoning": plan.reasoning,
         "resolution_note": warning_note or "",
         "tools_to_call": [],
     }
 
+    if plan.active_blocker:
+        updates["active_blocker_type"] = plan.active_blocker.type
+        updates["active_blocker_details"] = plan.active_blocker.details
+
+    if plan.customer_commitment:
+        updates["customer_commitment_status"] = plan.customer_commitment.status
+        updates["customer_commitment_timeline"] = plan.customer_commitment.timeline
+        updates["customer_commitment_details"] = plan.customer_commitment.details
+
+    if plan.should_escalate:
+        updates["conversation_state"] = ConversationState.ESCALATING.value
+        updates["next_state"] = ConversationState.ESCALATING.value
+        updates["escalation_reason"] = plan.escalation_reason or "Customer requested human."
+        updates["outcome"] = SessionOutcome.ESCALATED.value
+    elif plan.should_close or plan.objective_met:
+        updates["conversation_state"] = ConversationState.CLOSING.value
+        updates["next_state"] = ConversationState.CLOSING.value
+        updates["outcome"] = SessionOutcome.RESOLVED.value
+    else:
+        updates["conversation_state"] = ConversationState.UNDERSTANDING.value
+        updates["next_state"] = ConversationState.UNDERSTANDING.value
+
+    # Append serialised TurnPlan for logging
+    existing_plans = list(state.get("turn_plans") or [])
+    existing_plans.append(plan_dict)
+    updates["turn_plans"] = existing_plans
+
+    return updates
+
+
 def greeting_node(state: GraphState, intent: ParsedIntent) -> GraphState:
-    from app.llm.response_generator import ResponseGenerator
     return {
         "conversation_state": ConversationState.UNDERSTANDING.value,
         "latest_agent_message": ResponseGenerator._fallback_opening(intent),
@@ -166,16 +118,16 @@ def greeting_node(state: GraphState, intent: ParsedIntent) -> GraphState:
 def understanding_node(state: GraphState, intent: ParsedIntent) -> GraphState:
     return {
         "conversation_state": ConversationState.UNDERSTANDING.value,
-        "latest_agent_message": f"Could you tell me a little more about {intent.topic_one.rstrip('.')}?",
+        "latest_agent_message": (
+            f"Could you tell me a little more about {(intent.call_objective or 'your situation').rstrip('.')}?"
+        ),
     }
 
 
 def negotiating_node(state: GraphState, intent: ParsedIntent) -> GraphState:
     return {
-        "conversation_state": ConversationState.NEGOTIATING.value,
-        "latest_agent_message": (
-            f"Thanks. I'd also like to ask about {(intent.topic_two or intent.topic_one).rstrip('.')}."
-        ),
+        "conversation_state": ConversationState.UNDERSTANDING.value,
+        "latest_agent_message": "Thanks for that — let me look into the best way to help you.",
     }
 
 
@@ -225,22 +177,8 @@ def _customer_turns(transcript: list[object]) -> list[object]:
 def _is_meaningful_customer_response(message: str) -> bool:
     lowered = message.lower().strip()
     non_answers = {
-        "",
-        "yeah",
-        "yes",
-        "yep",
-        "okay",
-        "ok",
-        "fine",
-        "sure",
-        "and",
-        "and?",
-        "bye",
-        "goodbye",
-        "now is fine",
-        "yeah now is fine",
-        "yes now is fine",
-        "that's fine",
-        "thats fine",
+        "", "yeah", "yes", "yep", "okay", "ok", "fine", "sure",
+        "and", "and?", "bye", "goodbye", "now is fine",
+        "yeah now is fine", "yes now is fine", "that's fine", "thats fine",
     }
     return lowered not in non_answers and len(lowered.split()) >= 4
