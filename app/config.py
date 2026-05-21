@@ -6,8 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     groq_api_key: str = Field(default="", alias="GROQ_API_KEY")
-    # NOTE: Switched to 8b for latency testing; restore to 70b for production quality
-    groq_model_primary: str = Field(default="llama-3.1-8b-instant", alias="GROQ_MODEL_PRIMARY")
+    groq_model_primary: str = Field(default="llama-3.3-70b-versatile", alias="GROQ_MODEL_PRIMARY")
     groq_model_fallback: str = Field(default="llama-3.1-8b-instant", alias="GROQ_MODEL_FALLBACK")
     log_dir: str = Field(default="./logs", alias="LOG_DIR")
     max_turns_before_escalation: int = Field(default=10, alias="MAX_TURNS_BEFORE_ESCALATION")
