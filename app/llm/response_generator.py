@@ -36,7 +36,7 @@ class ResponseGenerator:
             f"Call objective: {call_objective}\n"
             f"Customer commitment status: {session_state.customer_commitment_status}\n"
             f"Active blocker: {session_state.active_blocker_type or 'None'}\n"
-            f"Transcript:\n{self._transcript_text(transcript)}"
+            f"Transcript:\n{self._transcript_text(transcript[-8:])}"
         )
 
         for attempt in range(2):

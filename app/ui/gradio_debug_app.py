@@ -7,21 +7,32 @@ import gradio as gr
 from app.services.session_service import SessionService
 from app.transport.gradio_transport import GradioTransport
 
-service = SessionService(GradioTransport())
+"""
+LATENCY DIAGNOSIS:
+1. Transcript growth: Yes, transcript is sent to Groq without truncation, growing linearly.
+2. Model in use: 'llama-3.3-70b-versatile' is currently used, contributing to latency.
+3. Number of LLM calls: Confirmed only one call per turn is made. No legacy calls exist.
+4. Between-conversation latency: `SessionService` is instantiated globally, reusing registries and LLM client state across all Gradio sessions.
+5. Hugging Face cold starts: N/A, but noted for free tier.
+"""
+
 SESSION_CACHE = {}
 
 
 def start_session(operator_instruction: str):
+    service = SessionService(GradioTransport())
     session = asyncio.run(service.create_session(operator_instruction))
     session = asyncio.run(service.start_session(session))
     SESSION_CACHE["active"] = session
+    SESSION_CACHE["service"] = service
     transcript = "\n".join(f"{item.role}: {item.content}" for item in session.transcript)
     return session.session_id, transcript, session.agent_last_message, session.summary
 
 
 def send_customer_message(customer_message: str):
     session = SESSION_CACHE.get("active")
-    if not session:
+    service = SESSION_CACHE.get("service")
+    if not session or not service:
         return "", "No active session.", "", ""
     session = asyncio.run(service.handle_customer_turn(session, customer_message))
     SESSION_CACHE["active"] = session
