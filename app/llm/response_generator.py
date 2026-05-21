@@ -1,41 +1,73 @@
 from __future__ import annotations
 
-from app.core.enums import ConversationState
+import json
+import logging
+
 from app.llm.groq_client import GroqLLMClient
 from app.llm.prompts import (
-    CLOSING_PROMPT,
-    FAREWELL_DETECTION_PROMPT,
     OPENING_MESSAGE_PROMPT,
     SUMMARY_GENERATION_PROMPT,
-    TOPIC_FOLLOW_UP_PROMPT,
-    TOPIC_TRANSITION_PROMPT,
+    TURN_PLANNING_PROMPT,
 )
 from app.schemas.parsed_intent import ParsedIntent
+from app.schemas.session_state import SessionState
 from app.schemas.transcript import TranscriptEntry
+from app.schemas.turn_plan import TurnPlan
+
+logger = logging.getLogger(__name__)
+
+_FALLBACK_PLAN_RESPONSE = "Thanks for that. Let me look into this and get back to you shortly."
 
 
 class ResponseGenerator:
     def __init__(self, llm_client: GroqLLMClient | None = None) -> None:
         self.llm_client = llm_client or GroqLLMClient()
 
-    async def generate(
+    async def plan_turn(
         self,
-        state: ConversationState,
-        intent: ParsedIntent,
+        call_objective: str,
         transcript: list[TranscriptEntry],
-        customer_message: str = "",
-        escalation_reason: str | None = None,
-    ) -> str:
-        if state == ConversationState.GREETING:
-            return await self.generate_opening_message(intent)
-        if state == ConversationState.CLOSING:
-            return await self.generate_closing_message(intent, transcript)
-        if state == ConversationState.ESCALATING:
-            return "Thanks for explaining that. I'll hand this over for a human follow-up from our team."
-        if state == ConversationState.VOICEMAIL:
-            return "Hi, this is Alex from iSoft calling to follow up. Please call us back when you have a moment. Thank you."
-        topic_number = 2 if "timeline" in customer_message.lower() else 1
-        return await self.generate_topic_follow_up(intent, transcript, topic_number)
+        session_state: SessionState,
+    ) -> TurnPlan:
+        """Single authoritative LLM call per customer turn.
+        Includes one silent retry on malformed JSON. Returns a safe fallback TurnPlan on second failure.
+        """
+        user_prompt = (
+            f"Call objective: {call_objective}\n"
+            f"Customer commitment status: {session_state.customer_commitment_status}\n"
+            f"Active blocker: {session_state.active_blocker_type or 'None'}\n"
+            f"Transcript:\n{self._transcript_text(transcript)}"
+        )
+
+        for attempt in range(2):
+            try:
+                raw = await self.llm_client.complete_json(TURN_PLANNING_PROMPT, user_prompt)
+                return TurnPlan.model_validate(raw)
+            except Exception as exc:
+                if attempt == 0:
+                    logger.warning("plan_turn: attempt 1 failed (%s), retrying…", exc)
+                else:
+                    logger.error("plan_turn: both attempts failed (%s), using fallback.", exc)
+
+        customer_turns = [e for e in transcript if e.role.lower() == "customer"]
+        last = (customer_turns[-1].content.lower().strip() if customer_turns else "")
+        farewell_words = {"bye", "goodbye", "thanks bye", "that's all", "no that's everything", "we're done"}
+        if last in farewell_words:
+            return TurnPlan(
+                customer_intent="Customer is ending the call.",
+                conversation_phase="closing",
+                should_close=True,
+                next_action="close_conversation",
+                reasoning="Farewell detected in fallback path.",
+                agent_response="Thanks for your time today. We'll be in touch. Goodbye.",
+            )
+        return TurnPlan(
+            customer_intent="Customer intent unclear.",
+            conversation_phase="gathering",
+            next_action="gather_information",
+            reasoning="LLM unavailable — using safe fallback.",
+            agent_response=_FALLBACK_PLAN_RESPONSE,
+        )
 
     async def generate_opening_message(self, intent: ParsedIntent) -> str:
         fallback = self._fallback_opening(intent)
@@ -44,105 +76,11 @@ class ResponseGenerator:
         user_prompt = (
             f"Operator instruction: {intent.raw_instruction or 'N/A'}\n"
             f"Call purpose / issue type: {intent.issue_type or 'N/A'}\n"
-            f"Topic one: {intent.topic_one}\n"
-            f"Topic two: {intent.topic_two or 'N/A'}\n"
+            f"Call objective: {intent.call_objective or 'N/A'}\n"
             f"Desired resolution: {intent.desired_resolution or 'N/A'}\n"
             f"Amount (if any): {getattr(intent, 'amount', None) or 'N/A'}\n"
-            f"Single topic: {intent.single_topic}"
         )
         raw = await self.llm_client.complete(OPENING_MESSAGE_PROMPT, user_prompt, prefer_fallback=True)
-        return self._clean_spoken_response(raw, fallback)
-
-    async def judge_topic_transition(self, intent: ParsedIntent, transcript: list[TranscriptEntry]) -> dict[str, object]:
-        return await self.judge_topic_completion(intent, transcript, topic_number=1)
-
-    async def detect_farewell(self, transcript: list[TranscriptEntry]) -> dict[str, object]:
-        fallback = self._fallback_farewell_detection(transcript)
-        if not self.llm_client.client:
-            return fallback
-        latest_customer_message = ""
-        for entry in reversed(transcript):
-            if entry.role.lower() == "customer":
-                latest_customer_message = entry.content
-                break
-        user_prompt = (
-            f"Latest customer message: {latest_customer_message or 'N/A'}\n"
-            f"Transcript:\n{self._transcript_text(transcript)}"
-        )
-        try:
-            result = await self.llm_client.complete_json(FAREWELL_DETECTION_PROMPT, user_prompt)
-        except Exception:
-            result = fallback
-        return {
-            "should_end_call": bool(result.get("should_end_call")),
-            "reasoning": str(result.get("reasoning") or "No clear farewell detected."),
-        }
-
-    async def judge_topic_completion(
-        self,
-        intent: ParsedIntent,
-        transcript: list[TranscriptEntry],
-        topic_number: int,
-    ) -> dict[str, object]:
-        topic_label = intent.topic_one if topic_number == 1 else (intent.topic_two or intent.topic_one)
-        fallback = self._fallback_transition_judgment(transcript, topic_number, intent.single_topic)
-        if not self.llm_client.client:
-            return fallback
-        user_prompt = (
-            f"Current topic number: {topic_number}\n"
-            f"Current topic label: {topic_label}\n"
-            f"Topic one: {intent.topic_one}\n"
-            f"Topic two: {intent.topic_two or 'N/A'}\n"
-            f"Transcript:\n{self._transcript_text(transcript)}"
-        )
-        try:
-            result = await self.llm_client.complete_json(TOPIC_TRANSITION_PROMPT, user_prompt)
-        except Exception:
-            result = fallback
-        return {
-            "topic_complete": bool(result.get("topic_complete", result.get("topic_one_complete"))),
-            "reasoning": str(result.get("reasoning") or "This topic needs a little more discussion."),
-        }
-
-    async def generate_topic_transition_message(self, intent: ParsedIntent, transcript: list[TranscriptEntry]) -> str:
-        if intent.single_topic or not intent.topic_two:
-            return await self.generate_closing_message(intent, transcript)
-        return self._fallback_topic_two_opening_question(intent.topic_two)
-
-    async def generate_topic_follow_up(
-        self,
-        intent: ParsedIntent,
-        transcript: list[TranscriptEntry],
-        topic_number: int,
-        customer_message: str = "",
-    ) -> str:
-        topic = intent.topic_one if topic_number == 1 else (intent.topic_two or intent.topic_one)
-        fallback = self._fallback_topic_follow_up(topic, customer_message, topic_number)
-        if not self.llm_client.client:
-            return fallback
-
-        user_prompt = (
-            f"Current topic number: {topic_number}\n"
-            f"Current topic label: {topic}\n"
-            f"Topic one: {intent.topic_one}\n"
-            f"Topic two: {intent.topic_two or 'N/A'}\n"
-            f"Latest customer message: {customer_message or 'N/A'}\n"
-            f"Current topic instruction: {self._current_topic_instruction(topic_number)}\n"
-            f"Transcript:\n{self._transcript_text(transcript)}"
-        )
-        raw = await self.llm_client.complete(TOPIC_FOLLOW_UP_PROMPT, user_prompt, prefer_fallback=True)
-        return self._clean_spoken_response(raw, fallback)
-
-    async def generate_closing_message(self, intent: ParsedIntent, transcript: list[TranscriptEntry]) -> str:
-        fallback = "Thanks for your time today. That covers everything I needed, so I'll let you go. Goodbye."
-        if not self.llm_client.client:
-            return fallback
-        user_prompt = (
-            f"Topic one: {intent.topic_one}\n"
-            f"Topic two: {intent.topic_two or 'N/A'}\n"
-            f"Transcript:\n{self._transcript_text(transcript)}"
-        )
-        raw = await self.llm_client.complete(CLOSING_PROMPT, user_prompt, prefer_fallback=True)
         return self._clean_spoken_response(raw, fallback)
 
     async def generate_summary(self, intent: ParsedIntent, transcript: list[TranscriptEntry]) -> str:
@@ -150,9 +88,8 @@ class ResponseGenerator:
         if not self.llm_client.client:
             return fallback
         user_prompt = (
-            f"Topic one: {intent.topic_one}\n"
-            f"Topic two: {intent.topic_two or 'N/A'}\n"
-            f"Single topic: {intent.single_topic}\n"
+            f"Call objective: {intent.call_objective or 'N/A'}\n"
+            f"Issue type: {intent.issue_type or 'N/A'}\n"
             f"Transcript:\n{self._transcript_text(transcript)}"
         )
         return await self.llm_client.complete(SUMMARY_GENERATION_PROMPT, user_prompt, prefer_fallback=True)
@@ -205,118 +142,28 @@ class ResponseGenerator:
 
     @staticmethod
     def _fallback_opening(intent: ParsedIntent) -> str:
-        context = (intent.desired_resolution or intent.issue_type or intent.topic_one).rstrip('.').replace('_', ' ')
-        if intent.single_topic or not intent.topic_two:
-            return (
-                f"Hi, this is Alex calling on behalf of iSoft. I was hoping to ask you a few questions about "
-                f"{context} if you have a moment."
-            )
+        context = (
+            intent.call_objective
+            or intent.desired_resolution
+            or intent.issue_type
+            or "your account"
+        ).rstrip(".").replace("_", " ")
         return (
-            f"Hi, this is Alex calling on behalf of iSoft. I was hoping to ask you a few questions about "
-            f"{context} and get a sense of {intent.topic_two.rstrip('.').lower()} if you have a moment."
+            f"Hi, my name is Alex from iSoft. I'm calling today regarding {context} — "
+            f"I was hoping to have a quick chat if you have a moment."
         )
-
-    @staticmethod
-    def _fallback_topic_follow_up(topic: str, customer_message: str, topic_number: int) -> str:
-        if topic_number == 1:
-            if customer_message:
-                return f"Thanks, that helps. What else can you tell me about {topic.rstrip('.')}?"
-            return f"Thanks. Could you tell me a little more about {topic.rstrip('.')}?"
-        if customer_message:
-            return f"That makes sense. How long are you expecting {topic.rstrip('.')} to take?"
-        if topic_number == 1:
-            return f"Thanks. Could you tell me a little more about {topic.rstrip('.')}?"
-        return f"How long are you expecting {topic.rstrip('.')} to take?"
-
-    @staticmethod
-    def _fallback_topic_two_opening_question(topic_two: str | None) -> str:
-        topic = (topic_two or "the timeline").rstrip(".")
-        return f"Thanks, that's helpful. How long are you expecting {topic} to take?"
-
-    @staticmethod
-    def _current_topic_instruction(topic_number: int) -> str:
-        if topic_number == 1:
-            return (
-                "You are currently on topic one only. Do not mention, reference, or ask about topic two until explicitly instructed. "
-                "Your only goal right now is to gather information about topic one."
-            )
-        return (
-            "You are currently on topic two only. Ask a specific time-related question and stay on timing until the customer has answered it meaningfully. "
-            "Do not return to topic one."
-        )
-
-    @staticmethod
-    def _fallback_transition_judgment(
-        transcript: list[TranscriptEntry],
-        topic_number: int,
-        single_topic: bool,
-    ) -> dict[str, object]:
-        customer_turns = [entry for entry in transcript if entry.role.lower() == "customer"]
-        last_customer = customer_turns[-1].content.lower() if customer_turns else ""
-        non_answers = {"and?", "and", "okay", "ok", "fine", "sure", "right", "yep", "yes"}
-        if topic_number == 1:
-            if single_topic:
-                complete = (
-                    bool(last_customer)
-                    and last_customer not in non_answers
-                    and len(last_customer.split()) >= 4
-                )
-            else:
-                complete = len(customer_turns) >= 2
-            reasoning = "The customer has given enough context on topic one to move forward." if complete else (
-                "The customer has not given enough detail on topic one yet."
-            )
-            return {"topic_complete": complete, "reasoning": reasoning}
-
-        complete = (
-            bool(last_customer)
-            and last_customer not in non_answers
-            and len(last_customer.split()) >= 4
-            and not any(phrase in last_customer for phrase in ["human", "person", "agent", "representative"])
-        )
-        reasoning = "The customer gave a meaningful answer on topic two." if complete else (
-            "The customer has not answered topic two in a meaningful way yet."
-        )
-        return {"topic_complete": complete, "reasoning": reasoning}
-
-    @staticmethod
-    def _fallback_farewell_detection(transcript: list[TranscriptEntry]) -> dict[str, object]:
-        latest_customer_message = ""
-        for entry in reversed(transcript):
-            if entry.role.lower() == "customer":
-                latest_customer_message = entry.content.lower().strip()
-                break
-        farewell_phrases = {
-            "bye",
-            "goodbye",
-            "thanks bye",
-            "that's all",
-            "thats all",
-            "no that's everything",
-            "no thats everything",
-            "we're done",
-            "were done",
-            "talk later",
-            "speak soon",
-            "catch you later",
-        }
-        should_end_call = latest_customer_message in farewell_phrases
-        reasoning = "The customer is clearly ending the call." if should_end_call else "No clear farewell detected."
-        return {"should_end_call": should_end_call, "reasoning": reasoning}
 
     @staticmethod
     def _fallback_summary(intent: ParsedIntent, transcript: list[TranscriptEntry]) -> str:
         customer_statements = [entry.content for entry in transcript if entry.role.lower() == "customer"]
+        objective = intent.call_objective or intent.issue_type or "the call objective"
         if not customer_statements:
-            customer_context = "The customer did not provide much detail during the call."
-        else:
-            customer_context = f"The customer explained that {customer_statements[-1].rstrip('.') }."
-        if intent.single_topic or not intent.topic_two:
             return (
-                f"The call focused on {intent.topic_one}. {customer_context} "
-                "Alex captured the response and closed the conversation politely."
+                f"The call focused on {objective}. "
+                "The customer did not provide much detail before the call ended."
             )
+        customer_context = f"The customer explained that {customer_statements[-1].rstrip('.')}."
         return (
-            f"The call first covered {intent.topic_one}, then moved to {intent.topic_two}. "
-            f"{customer_context} Alex captured the customer's answers across both topics and closed the call politely."
+            f"The call focused on {objective}. {customer_context} "
+            "Alex captured the response and closed the conversation politely."
         )
