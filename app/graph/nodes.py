@@ -87,6 +87,10 @@ async def agent_node(
         updates["customer_commitment_timeline"] = plan.customer_commitment.timeline
         updates["customer_commitment_details"] = plan.customer_commitment.details
 
+    existing_plans = list(state.get("turn_plans") or [])
+    if existing_plans and existing_plans[-1].get("next_action") == "escalate_to_human":
+        plan.should_close = True
+
     if plan.should_escalate:
         updates["conversation_state"] = ConversationState.ESCALATING.value
         updates["next_state"] = ConversationState.ESCALATING.value
@@ -101,7 +105,6 @@ async def agent_node(
         updates["next_state"] = ConversationState.UNDERSTANDING.value
 
     # Append serialised TurnPlan for logging
-    existing_plans = list(state.get("turn_plans") or [])
     existing_plans.append(plan_dict)
     updates["turn_plans"] = existing_plans
 
