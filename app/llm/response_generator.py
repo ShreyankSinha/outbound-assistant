@@ -24,69 +24,67 @@ class ResponseGenerator:
     def __init__(self, llm_client: GroqLLMClient | None = None) -> None:
         self.llm_client = llm_client or GroqLLMClient()
 
-async def plan_turn(
-    self,
-    call_objective: str,
-    transcript: list[TranscriptEntry],
-    session_state: SessionState,
-) -> TurnPlan:
-    """Single authoritative LLM call per customer turn.
-    Includes one silent retry on malformed JSON. Returns a safe fallback TurnPlan on second failure.
-    """
-    if not self.llm_client.client:
-        logger.warning("plan_turn: no LLM client available, using fallback.")
+    async def plan_turn(
+        self,
+        call_objective: str,
+        transcript: list[TranscriptEntry],
+        session_state: SessionState,
+    ) -> TurnPlan:
+        """Single authoritative LLM call per customer turn.
+        Includes one silent retry on malformed JSON. Returns a safe fallback TurnPlan on second failure.
+        """
+        if not self.llm_client.client:
+            logger.warning("plan_turn: no LLM client available, using fallback.")
+            return self._fallback_turn_plan(transcript)
+
+        user_prompt = (
+            f"Call objective: {call_objective}\n"
+            f"Customer commitment status: {session_state.customer_commitment_status}\n"
+            f"Active blocker: {session_state.active_blocker_type or 'None'}\n"
+            f"Transcript:\n{self._transcript_text(transcript[-8:])}"
+        )
+
+        for attempt in range(2):
+            try:
+                raw_text = await self.llm_client.complete(TURN_PLANNING_PROMPT, user_prompt)
+                clean = raw_text.strip()
+                if clean.startswith("```"):
+                    clean = re.sub(r"^```[a-zA-Z]*\n?", "", clean)
+                    clean = re.sub(r"```$", "", clean).strip()
+                parsed = json.loads(clean)
+                return TurnPlan.model_validate(parsed)
+            except Exception as exc:
+                if attempt == 0:
+                    logger.warning("plan_turn: attempt 1 failed (%s), retrying...", exc)
+                else:
+                    logger.error("plan_turn: both attempts failed (%s), using fallback.", exc)
+
         return self._fallback_turn_plan(transcript)
 
-    user_prompt = (
-        f"Call objective: {call_objective}\n"
-        f"Customer commitment status: {session_state.customer_commitment_status}\n"
-        f"Active blocker: {session_state.active_blocker_type or 'None'}\n"
-        f"Transcript:\n{self._transcript_text(transcript[-8:])}"
-    )
-
-    for attempt in range(2):
-        try:
-            raw_text = await self.llm_client.complete(TURN_PLANNING_PROMPT, user_prompt)
-            # Strip markdown fences if present
-            clean = raw_text.strip()
-            if clean.startswith("```"):
-                clean = re.sub(r"^```[a-zA-Z]*\n?", "", clean)
-                clean = re.sub(r"```$", "", clean).strip()
-            parsed = json.loads(clean)
-            return TurnPlan.model_validate(parsed)
-        except Exception as exc:
-            if attempt == 0:
-                logger.warning("plan_turn: attempt 1 failed (%s), retrying...", exc)
-            else:
-                logger.error("plan_turn: both attempts failed (%s), using fallback.", exc)
-
-    return self._fallback_turn_plan(transcript)
-
-def _fallback_turn_plan(self, transcript: list[TranscriptEntry]) -> TurnPlan:
-    """Safe fallback TurnPlan when LLM is unavailable or returns invalid JSON."""
-    customer_turns = [e for e in transcript if e.role.lower() == "customer"]
-    last = customer_turns[-1].content.lower().strip() if customer_turns else ""
-    farewell_words = {
-        "bye", "goodbye", "cya", "see ya", "cheers bye", "thanks bye",
-        "that's all", "no that's everything", "speak soon", "take care"
-    }
-    if any(word in last for word in farewell_words):
+    def _fallback_turn_plan(self, transcript: list[TranscriptEntry]) -> TurnPlan:
+        """Safe fallback TurnPlan when LLM is unavailable or returns invalid JSON."""
+        customer_turns = [e for e in transcript if e.role.lower() == "customer"]
+        last = customer_turns[-1].content.lower().strip() if customer_turns else ""
+        farewell_words = {
+            "bye", "goodbye", "cya", "see ya", "cheers bye", "thanks bye",
+            "that's all", "no that's everything", "speak soon", "take care"
+        }
+        if any(word in last for word in farewell_words):
+            return TurnPlan(
+                customer_intent="Customer is ending the call.",
+                conversation_phase="closing",
+                should_close=True,
+                next_action="close_conversation",
+                reasoning="Farewell detected in fallback path.",
+                agent_response="Thanks for your time today. Goodbye.",
+            )
         return TurnPlan(
-            customer_intent="Customer is ending the call.",
-            conversation_phase="closing",
-            should_close=True,
-            next_action="close_conversation",
-            reasoning="Farewell detected in fallback path.",
-            agent_response="Thanks for your time today. Goodbye.",
+            customer_intent="Customer intent unclear.",
+            conversation_phase="gathering",
+            next_action="gather_information",
+            reasoning="LLM unavailable — using safe fallback.",
+            agent_response=_FALLBACK_PLAN_RESPONSE,
         )
-    return TurnPlan(
-        customer_intent="Customer intent unclear.",
-        conversation_phase="gathering",
-        next_action="gather_information",
-        reasoning="LLM unavailable — using safe fallback.",
-        agent_response=_FALLBACK_PLAN_RESPONSE,
-    )
-        
 
     async def generate_opening_message(self, intent: ParsedIntent) -> str:
         fallback = self._fallback_opening(intent)
