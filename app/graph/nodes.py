@@ -1,10 +1,28 @@
 from __future__ import annotations
 
+import re
+
 from app.core.enums import ConversationState, SessionOutcome
 from app.graph.state import GraphState
 from app.llm.response_generator import ResponseGenerator
 from app.schemas.parsed_intent import ParsedIntent
 from app.schemas.session_state import SessionState
+
+FAREWELL_PHRASES = {
+    "bye", "goodbye", "cya", "see ya", "see you", 
+    "cheers bye", "thanks bye", "that's all", "no that's everything",
+    "speak soon", "take care", "talk later", "catch you later",
+    "no thanks bye", "thats all", "no thats everything"
+}
+
+def _is_farewell(message: str) -> bool:
+    cleaned = re.sub(r'[^\w\s]', '', message.lower()).strip()
+    if not cleaned:
+        return False
+    for phrase in FAREWELL_PHRASES:
+        if phrase in cleaned and len(cleaned.split()) <= 6:
+            return True
+    return False
 
 
 async def agent_node(
@@ -41,6 +59,21 @@ async def agent_node(
     )
     if call_ended:
         return {}
+
+    # ── Pre-LLM Farewell Check ────────────────────────────────────────────────
+    if customer_message and _is_farewell(customer_message):
+        return {
+            "conversation_state": ConversationState.CLOSING.value,
+            "next_state": ConversationState.CLOSING.value,
+            "agent_message": "Thank you for your time. Goodbye.",
+            "latest_agent_message": "Thank you for your time. Goodbye.",
+            "next_action": "close_conversation",
+            "objective_met": True,
+            "reasoning": "Hardcoded farewell safety net triggered.",
+            "outcome": SessionOutcome.RESOLVED.value,
+            "resolution_note": "Closed via farewell safety net.",
+            "tools_to_call": [],
+        }
 
     # ── Single planning call ──────────────────────────────────────────────────
     call_objective = (
