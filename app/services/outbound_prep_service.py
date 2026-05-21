@@ -35,15 +35,12 @@ class OutboundPrepService:
         parsed_intent = await self.parser.parse(instruction)
         if parsed_intent.customer_id is None:
             raise ValueError("Operator instruction did not include a customer ID.")
-
         customer = self.directory.get_customer_by_id(parsed_intent.customer_id)
         if customer is None:
             raise ValueError(f"No customer found for customer_id={parsed_intent.customer_id}.")
-
         parsed_intent.customer_name = parsed_intent.customer_name or customer.customer_name
         parsed_intent.phone_number = customer.phone_number
         message = self._build_personalized_message(parsed_intent, customer)
-
         return PreparedCall(
             operator_instruction=instruction,
             parsed_intent=parsed_intent,
@@ -59,7 +56,6 @@ class OutboundPrepService:
         )
         session.parsed_intent = prepared.parsed_intent
         session.agent_last_message = prepared.personalized_message
-
         try:
             session = await self.session_service.start_session(session)
             prepared.telephony_attempted = True
@@ -72,10 +68,13 @@ class OutboundPrepService:
 
     @staticmethod
     def _build_personalized_message(parsed_intent: ParsedIntent, customer: CustomerRecord) -> str:
-        secondary = ""
-        if not parsed_intent.single_topic and parsed_intent.topic_two:
-            secondary = f" and {parsed_intent.topic_two.rstrip('.')}"
+        objective = (
+            parsed_intent.call_objective
+            or parsed_intent.desired_resolution
+            or parsed_intent.issue_type
+            or "a few things regarding your account"
+        ).rstrip(".")
         return (
             f"Hi {customer.customer_name}, this is Alex calling on behalf of iSoft. "
-            f"I was hoping to ask you about {parsed_intent.topic_one.rstrip('.')}{secondary} if you have a moment."
+            f"I was hoping to have a quick chat about {objective} if you have a moment."
         )
