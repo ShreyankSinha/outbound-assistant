@@ -68,15 +68,33 @@ class SessionService:
             decision = await agent_node(
                 {
                     "transcript": session.transcript,
-                    "current_topic": session.current_topic,
-                    "topic_one_complete": session.topic_one_complete,
-                    "topic_two_complete": session.topic_two_complete,
+                    "turn_plans": session.turn_plans,
                 },
                 session.parsed_intent,
                 self.responses,
+                session=session,
             )
-            session.agent_last_message = decision["agent_message"]
-            session.conversation_state = ConversationState(decision["conversation_state"])
+            session.agent_last_message = decision.get("agent_message") or decision.get("latest_agent_message", "")
+            if "conversation_state" in decision:
+                session.conversation_state = ConversationState(decision["conversation_state"])
+            if "next_action" in decision:
+                session.next_action = decision["next_action"]
+            if "objective_met" in decision:
+                session.objective_met = decision["objective_met"]
+            if "customer_intent" in decision:
+                session.customer_intent = decision["customer_intent"]
+            if "active_blocker_type" in decision:
+                session.active_blocker_type = decision["active_blocker_type"]
+            if "active_blocker_details" in decision:
+                session.active_blocker_details = decision["active_blocker_details"]
+            if "customer_commitment_status" in decision:
+                session.customer_commitment_status = decision["customer_commitment_status"]
+            if "customer_commitment_timeline" in decision:
+                session.customer_commitment_timeline = decision["customer_commitment_timeline"]
+            if "customer_commitment_details" in decision:
+                session.customer_commitment_details = decision["customer_commitment_details"]
+            if "turn_plans" in decision:
+                session.turn_plans = decision["turn_plans"]
         self.transcripts.add_entry(session, "agent", session.agent_last_message)
         if isinstance(self.voice.transport, TwilioTransport):
             try:
@@ -105,24 +123,42 @@ class SessionService:
                 {
                     "current_state": session.conversation_state.value,
                     "latest_customer_message": customer_message,
-                    "current_topic": session.current_topic,
-                    "topic_one_complete": session.topic_one_complete,
-                    "topic_two_complete": session.topic_two_complete,
                     "transcript": session.transcript,
                     "turn_count": session.turn_count,
+                    "turn_plans": session.turn_plans,
                 },
                 session.parsed_intent,
                 self.responses,
+                session=session,
             )
-            session.conversation_state = ConversationState(graph_state["conversation_state"])
+            
+            if "conversation_state" in graph_state:
+                session.conversation_state = ConversationState(graph_state["conversation_state"])
             session.escalation_reason = graph_state.get("escalation_reason")
-            session.current_topic = graph_state.get("current_topic", session.current_topic)
-            session.topic_one_complete = graph_state.get("topic_one_complete", session.topic_one_complete)
-            session.topic_two_complete = graph_state.get("topic_two_complete", session.topic_two_complete)
             self._append_resolution_note(session, graph_state.get("resolution_note"))
-            if previous_topic == 1 and session.current_topic == 2:
-                self._append_resolution_note(session, f"topic_transition_turn:{session.turn_count}")
+            
             session.agent_last_message = graph_state.get("agent_message") or graph_state.get("latest_agent_message", "")
+            
+            if "next_action" in graph_state:
+                session.next_action = graph_state["next_action"]
+            if "objective_met" in graph_state:
+                session.objective_met = graph_state["objective_met"]
+            if "customer_intent" in graph_state:
+                session.customer_intent = graph_state["customer_intent"]
+            if "active_blocker_type" in graph_state:
+                session.active_blocker_type = graph_state["active_blocker_type"]
+            if "active_blocker_details" in graph_state:
+                session.active_blocker_details = graph_state["active_blocker_details"]
+            if "customer_commitment_status" in graph_state:
+                session.customer_commitment_status = graph_state["customer_commitment_status"]
+            if "customer_commitment_timeline" in graph_state:
+                session.customer_commitment_timeline = graph_state["customer_commitment_timeline"]
+            if "customer_commitment_details" in graph_state:
+                session.customer_commitment_details = graph_state["customer_commitment_details"]
+            if "turn_plans" in graph_state:
+                session.turn_plans = graph_state["turn_plans"]
+            if "outcome" in graph_state and session.outcome is None:
+                session.outcome = SessionOutcome(graph_state["outcome"])
             if (
                 session.conversation_state not in {ConversationState.CLOSING, ConversationState.ESCALATING, ConversationState.VOICEMAIL}
                 and session.turn_count >= self.settings.max_turns_before_escalation
