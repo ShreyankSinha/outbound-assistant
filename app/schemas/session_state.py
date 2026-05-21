@@ -23,6 +23,19 @@ class SessionState(BaseModel):
     follow_up_actions: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     turn_count: int = 0
+    # New V2 Fields
+    call_objective: str = ""
+    customer_intent: str = ""
+    active_blocker_type: str | None = None
+    active_blocker_details: str | None = None
+    customer_commitment_status: str = "none"
+    customer_commitment_timeline: str | None = None
+    customer_commitment_details: str | None = None
+    objective_met: bool = False
+    next_action: str = "gather_information"
+    turn_plans: list[dict[str, Any]] = Field(default_factory=list)
+
+    # Deprecated fields
     current_topic: int = 1
     topic_one_complete: bool = False
     topic_two_complete: bool | None = None
