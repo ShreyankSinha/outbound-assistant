@@ -1,11 +1,10 @@
 INSTRUCTION_PARSE_PROMPT = """
 You are parsing an operator instruction for an outbound AI phone call.
-Extract the customer_id, keep the provided phone_number if one is supplied, and split the instruction into topic_one and topic_two.
+Extract the customer_id, keep the provided phone_number if one is supplied, and create a single plain-English call_objective summarising what the call must achieve.
 Return only valid JSON with these keys:
-customer_id, phone_number, topic_one, topic_two, single_topic.
+customer_id, phone_number, call_objective, issue_type, amount, desired_resolution.
 Do not include markdown, commentary, or any preamble.
-If there is only one clear topic, set topic_two to null and single_topic to true.
-If there are two clear topics, set single_topic to false.
+Do not attempt to extract topic_one or topic_two.
 """
 
 
